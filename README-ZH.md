@@ -66,6 +66,7 @@ research-assistant locate <md_path> "<q>"      # 锚点式相关性扫描
 
 # 管理
 research-assistant setup                       # 配置 + 安装 skill/agent
+research-assistant config fields               # 查看各 provider 需填的配置字段
 research-assistant doctor [--show-config]      # 连通性诊断
 research-assistant skills status               # 受管 skill/agent 新鲜度
 ```

@@ -80,8 +80,9 @@ def _build_parser(config: Any) -> argparse.ArgumentParser:
     from .commands import setup as setup_cmd
     from .commands import skills as skills_cmd
     from .commands import doctor as doctor_cmd
+    from .commands import config as config_cmd
 
-    for cmd in (fetch_cmd, locate_cmd, search_cmd, ask_cmd, setup_cmd, skills_cmd, doctor_cmd):
+    for cmd in (fetch_cmd, locate_cmd, search_cmd, ask_cmd, config_cmd, setup_cmd, skills_cmd, doctor_cmd):
         cmd.register(subs)
 
     return parser

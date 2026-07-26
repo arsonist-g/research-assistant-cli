@@ -49,12 +49,26 @@ from .registry import register
 DEFAULT_BASE_URL = "https://api.firecrawl.dev/v2"
 
 
+def _keyless_flags() -> list[ArgSpec]:
+    """keyless 命令（scrape/search/interact/parse）共享的 key 策略 flags。
+
+    默认 auto：配了 key 先走免 key，失败（限流/IP/suspicious）再带 key 重试一次。
+    --use-key 强制带 key（跳过免 key）；--keyless 强制免 key（失败不 fallback）。二者互斥。
+    """
+    return [
+        ArgSpec(["--use-key"], action="store_true",
+                help="Force the keyed tier; skip the keyless attempt (needs api_key)."),
+        ArgSpec(["--keyless"], action="store_true",
+                help="Force the keyless tier; do not fall back to key on failure."),
+    ]
+
+
 @register
 class FirecrawlProvider(Provider):
     type = "firecrawl"
     command = "firecrawl"
     aliases = ["fc"]
-    help = "Firecrawl scrape / search / map (scrape+search work keyless; map needs a key)."
+    help = "Firecrawl scrape/search/interact/parse (keyless) + map/crawl/extract/agent/monitor (need key)."
 
     def capabilities(self) -> list[Capability]:
         return [
@@ -66,7 +80,7 @@ class FirecrawlProvider(Provider):
                     ArgSpec(["--format"], choices=["markdown", "html"], default="markdown", help="Output format."),
                     ArgSpec(["--only-main-content"], action="store_true", help="Drop nav/footer boilerplate."),
                     ArgSpec(["--wait-for"], type=int, metavar="MS", help="Wait N ms before scraping."),
-                ],
+                ] + _keyless_flags(),
                 handler=self.scrape,
             ),
             Capability(
@@ -74,10 +88,10 @@ class FirecrawlProvider(Provider):
                 help="Web search (keyless); with --scrape returns full markdown per result.",
                 args=[
                     ArgSpec(["query"], kind="positional", help="Search query."),
-                    ArgSpec(["--limit"], type=int, default=10, help="Max results."),
+                    ArgSpec(["--limit"], type=int, default=10, help="Max results (1-100)."),
                     ArgSpec(["--sources"], nargs="+", choices=["web", "news"], help="Result sources."),
-                    ArgSpec(["--scrape"], action="store_true", help="Scrape full content for each result (needs key on keyless tier)."),
-                ],
+                    ArgSpec(["--scrape"], action="store_true", help="Scrape full content for each result."),
+                ] + _keyless_flags(),
                 handler=self.search,
             ),
             Capability(
@@ -124,7 +138,7 @@ class FirecrawlProvider(Provider):
             ),
             Capability(
                 name="interact",
-                help="Run a prompt or code in a live browser session bound to a scrape (needs a key).",
+                help="Run a prompt or code in a live browser session bound to a scrape (keyless).",
                 args=[
                     ArgSpec(["prompt"], kind="positional", nargs="?", metavar="TEXT",
                             help="AI prompt to run in the browser session (mode 1; exclusive with --code)."),
@@ -140,7 +154,7 @@ class FirecrawlProvider(Provider):
                             help="Execution timeout seconds (1-300, default 30)."),
                     ArgSpec(["--stop"], action="store_true",
                             help="Stop and tear down the session (requires --scrape-id)."),
-                ],
+                ] + _keyless_flags(),
                 handler=self.interact,
             ),
             Capability(
@@ -174,7 +188,7 @@ class FirecrawlProvider(Provider):
             ),
             Capability(
                 name="parse",
-                help="Upload a local document (.pdf/.docx/.html/...) and parse to markdown/json (needs a key).",
+                help="Upload a local document (.pdf/.docx/.html/...) and parse to markdown/json (keyless).",
                 args=[
                     ArgSpec(["file"], kind="positional", metavar="PATH",
                             help="Local file path (.html/.htm/.pdf/.docx/.doc/.odt/.rtf/.xlsx/.xls)."),
@@ -194,7 +208,7 @@ class FirecrawlProvider(Provider):
                             help="PDF parser mode (sets options.parsers[0].mode)."),
                     ArgSpec(["--max-pages"], type=int, metavar="N",
                             help="Max PDF pages to parse (1-10000, needs --pdf-mode)."),
-                ],
+                ] + _keyless_flags(),
                 handler=self.parse,
             ),
         ]
@@ -224,14 +238,106 @@ class FirecrawlProvider(Provider):
             msg = data.get("error") or "firecrawl 返回 success:false"
             raise ProviderError(f"firecrawl {endpoint}: {msg}", provider="firecrawl", details=data)
 
-    async def _scrape_one(self, client: Any, url: str, fmt: str, args: Any) -> dict[str, Any]:
+    def _require_keyed(self, cfg: ProviderConfig, endpoint: str) -> None:
+        """keyed 命令（map/crawl/extract/agent/monitor）必须配 key，否则前置失败，不发请求。"""
+        if not cfg.api_key:
+            from ..errors import ArgsError
+            raise ArgsError(
+                f"firecrawl {endpoint}: 此命令需要 api_key（免 key 层仅支持 scrape/search/interact/parse）",
+                provider="firecrawl",
+            )
+
+    def _resolve_mode(self, args: Any, cfg: ProviderConfig) -> str:
+        """解析 keyless 命令的 key 模式：keyless | use_key | auto。"""
+        from ..errors import ArgsError
+        if getattr(args, "keyless", False) and getattr(args, "use_key", False):
+            raise ArgsError("firecrawl: --keyless 与 --use-key 互斥", provider="firecrawl")
+        if getattr(args, "keyless", False):
+            return "keyless"
+        if getattr(args, "use_key", False):
+            if not cfg.api_key:
+                raise ArgsError("firecrawl: --use-key 需要 api_key，但未配置", provider="firecrawl")
+            return "use_key"
+        return "auto"  # 默认：有 key 先免 key 失败再带 key，无 key 只免 key
+
+    @staticmethod
+    def _is_keyless_retryable(err: Exception) -> bool:
+        """免 key 失败是否值得带 key 重试（限流/IP/suspicious/quota 类；网络错误不算）。"""
+        from ..errors import ProviderError
+        if not isinstance(err, ProviderError):
+            return False
+        details = getattr(err, "details", None) or {}
+        status = details.get("status_code")
+        if status in (403, 429):
+            return True
+        msg = (getattr(err, "message", "") or "").lower()
+        keywords = ("rate limit", "ratelimit", "too many", "suspicious", "quota", "limit reached", "ip ")
+        return any(k in msg for k in keywords)
+
+    async def _do_request(
+        self, client: Any, method: str, path: str, *,
+        json_body: Any = None, files: Any = None,
+        headers: dict[str, str] | None, endpoint: str,
+    ) -> dict[str, Any]:
+        """单次 firecrawl 请求（JSON 或 multipart），按 headers 决定是否带 key；统一 _check。"""
+        if files is not None:
+            import httpx
+            from ..errors import NetworkError, wrap_provider_http_error
+            try:
+                resp = await client.request(method, path, files=files, headers=headers)
+            except httpx.HTTPError as e:
+                raise wrap_provider_http_error("firecrawl", e) from e
+            if resp.status_code >= 400:
+                raise http_mod.handle_http_error("firecrawl", httpx.HTTPStatusError(
+                    f"firecrawl HTTP {resp.status_code}", request=resp.request, response=resp
+                ))
+            try:
+                data = resp.json()
+            except ValueError as e:
+                raise NetworkError(f"firecrawl: 响应非 JSON ({e})", provider="firecrawl") from e
+        else:
+            data = await http_mod.request_json(
+                client, method, path, provider="firecrawl", json_body=json_body, headers=headers
+            )
+        self._check(data, endpoint=endpoint)
+        return data
+
+    async def _request_keyless(
+        self, client: Any, method: str, path: str, *,
+        cfg: ProviderConfig, mode: str,
+        json_body: Any = None, files: Any = None, endpoint: str,
+    ) -> dict[str, Any]:
+        """keyless 命令请求调度：按 mode 决定是否带 key；auto 下免 key 失败（可重试）带 key 重试一次。
+
+        - keyless：永不带 key，失败即抛。
+        - use_key：必带 key（无 key 在 _resolve_mode 已挡）。
+        - auto：先免 key；失败且可重试（限流/IP/suspicious）且有 key → 带 key 重试一次。
+        """
+        from ..errors import ProviderError
+        key_headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else None
+
+        if mode == "use_key":
+            return await self._do_request(client, method, path, json_body=json_body, files=files,
+                                          headers=key_headers, endpoint=endpoint)
+
+        # keyless 或 auto：先免 key
+        try:
+            return await self._do_request(client, method, path, json_body=json_body, files=files,
+                                          headers=None, endpoint=endpoint)
+        except ProviderError as e:
+            if mode == "keyless" or not cfg.api_key or not self._is_keyless_retryable(e):
+                raise
+            # auto + 有 key + 可重试：带 key 再来一次
+            return await self._do_request(client, method, path, json_body=json_body, files=files,
+                                          headers=key_headers, endpoint=endpoint)
+
+    async def _scrape_one(self, client: Any, url: str, fmt: str, args: Any, cfg: ProviderConfig, mode: str) -> dict[str, Any]:
         body: dict[str, Any] = {"url": url, "formats": [fmt]}
         if getattr(args, "only_main_content", False):
             body["onlyMainContent"] = True
         if getattr(args, "wait_for", None):
             body["waitFor"] = args.wait_for
-        data = await http_mod.request_json(client, "POST", "scrape", provider="firecrawl", json_body=body)
-        self._check(data, endpoint="scrape")
+        data = await self._request_keyless(client, "POST", "scrape", cfg=cfg, mode=mode, json_body=body, endpoint="scrape")
         inner = data.get("data") or {}
         out: dict[str, Any] = {}
         if fmt == "markdown":
@@ -246,21 +352,22 @@ class FirecrawlProvider(Provider):
 
     async def scrape(self, args: Any) -> dict[str, Any]:
         cfg = self._cfg()
+        mode = self._resolve_mode(args, cfg)
         urls = args.urls
         async with http_mod.make_client(
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             base_url=cfg.base_url,
-            headers=self._headers(cfg),
         ) as client:
             if len(urls) == 1:
-                return {"data": await self._scrape_one(client, urls[0], args.format, args)}
+                return {"data": await self._scrape_one(client, urls[0], args.format, args, cfg, mode)}
             # 批量并发
-            items = await asyncio.gather(*[self._scrape_one(client, u, args.format, args) for u in urls])
+            items = await asyncio.gather(*[self._scrape_one(client, u, args.format, args, cfg, mode) for u in urls])
             return {"results": [{"url": u, "data": d} for u, d in zip(urls, items)]}
 
     async def search(self, args: Any) -> dict[str, Any]:
         cfg = self._cfg()
+        mode = self._resolve_mode(args, cfg)
         body: dict[str, Any] = {"query": args.query, "limit": args.limit}
         if args.scrape:
             body["scrapeOptions"] = {"formats": [{"type": "markdown"}]}
@@ -270,10 +377,8 @@ class FirecrawlProvider(Provider):
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             base_url=cfg.base_url,
-            headers=self._headers(cfg),
         ) as client:
-            data = await http_mod.request_json(client, "POST", "search", provider="firecrawl", json_body=body)
-        self._check(data, endpoint="search")
+            data = await self._request_keyless(client, "POST", "search", cfg=cfg, mode=mode, json_body=body, endpoint="search")
         out: dict[str, Any] = {}
         if args.scrape:
             arr = data.get("data") or []
@@ -293,6 +398,7 @@ class FirecrawlProvider(Provider):
 
     async def map(self, args: Any) -> dict[str, Any]:
         cfg = self._cfg()
+        self._require_keyed(cfg, "map")
         body: dict[str, Any] = {"url": args.url, "limit": args.limit}
         if args.include_subdomains:
             body["includeSubdomains"] = True
@@ -323,6 +429,7 @@ class FirecrawlProvider(Provider):
 
     async def crawl(self, args: Any) -> dict[str, Any]:
         cfg = self._cfg()
+        self._require_keyed(cfg, "crawl")
         body: dict[str, Any] = {
             "url": args.url,
             "limit": args.limit,
@@ -376,6 +483,7 @@ class FirecrawlProvider(Provider):
         from ..errors import ArgsError
 
         cfg = self._cfg()
+        self._require_keyed(cfg, "extract")
         body: dict[str, Any] = {"urls": args.urls}
         if args.prompt:
             body["prompt"] = args.prompt
@@ -418,6 +526,7 @@ class FirecrawlProvider(Provider):
         from ..errors import ArgsError, ProviderError
 
         cfg = self._cfg()
+        mode = self._resolve_mode(args, cfg)
         # --stop：配合 --scrape-id，DELETE 会话
         if args.stop:
             if not args.scrape_id:
@@ -426,12 +535,11 @@ class FirecrawlProvider(Provider):
                 proxy_url=resolve_proxy(self.config.proxy.url),
                 timeout=cfg.timeout,
                 base_url=cfg.base_url,
-                headers=self._headers(cfg),
             ) as client:
-                data = await http_mod.request_json(
-                    client, "DELETE", f"scrape/{args.scrape_id}/interact", provider="firecrawl"
+                await self._request_keyless(
+                    client, "DELETE", f"scrape/{args.scrape_id}/interact",
+                    cfg=cfg, mode=mode, endpoint="interact",
                 )
-            self._check(data, endpoint="interact")
             return {"stopped": True, "scrapeId": args.scrape_id}
 
         # 模式校验：prompt 与 --code 二选一
@@ -444,7 +552,6 @@ class FirecrawlProvider(Provider):
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             base_url=cfg.base_url,
-            headers=self._headers(cfg),
         ) as client:
             # 解析会话句柄：--scrape-id 优先；否则用 --url 发起 scrape 拿 metadata.scrapeId
             scrape_id = args.scrape_id
@@ -453,11 +560,10 @@ class FirecrawlProvider(Provider):
                     raise ArgsError(
                         "firecrawl interact: 需要 --scrape-id 或 --url（用于新建会话）", provider="firecrawl"
                     )
-                seed = await http_mod.request_json(
-                    client, "POST", "scrape", provider="firecrawl",
-                    json_body={"url": args.url, "formats": ["markdown"]},
+                seed = await self._request_keyless(
+                    client, "POST", "scrape", cfg=cfg, mode=mode,
+                    json_body={"url": args.url, "formats": ["markdown"]}, endpoint="scrape",
                 )
-                self._check(seed, endpoint="scrape")
                 seed_inner = seed.get("data") or {}
                 meta = seed_inner.get("metadata") or {}
                 scrape_id = meta.get("scrapeId")
@@ -474,10 +580,10 @@ class FirecrawlProvider(Provider):
             else:
                 body = {"prompt": args.prompt}
 
-            data = await http_mod.request_json(
-                client, "POST", f"scrape/{scrape_id}/interact", provider="firecrawl", json_body=body
+            data = await self._request_keyless(
+                client, "POST", f"scrape/{scrape_id}/interact",
+                cfg=cfg, mode=mode, json_body=body, endpoint="interact",
             )
-        self._check(data, endpoint="interact")
 
         # 透传会话句柄 + 执行结果（prompt→output，code→stdout/result/stderr/exitCode/killed）
         out: dict[str, Any] = {"scrapeId": scrape_id}
@@ -492,6 +598,7 @@ class FirecrawlProvider(Provider):
         from ..errors import ArgsError
 
         cfg = self._cfg()
+        self._require_keyed(cfg, "agent")
         body: dict[str, Any] = {"prompt": args.prompt, "model": args.model}
         if args.urls:
             body["urls"] = args.urls
@@ -538,6 +645,7 @@ class FirecrawlProvider(Provider):
         OpenAPI 的 required 误写为 data，实际响应字段是 crawls，两个字段都兼容。
         """
         cfg = self._cfg()
+        self._require_keyed(cfg, "monitor")
         async with http_mod.make_client(
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
@@ -558,18 +666,17 @@ class FirecrawlProvider(Provider):
         }
 
     async def parse(self, args: Any) -> dict[str, Any]:
-        """上传本地文件解析（POST /v2/parse，multipart/form-data）。
+        """上传本地文件解析（POST /v2/parse，multipart/form-data，keyless）。
 
-        request_json 只支持 JSON body；parse 需要 multipart 文件上传，这里直接用 client.request，
-        复用 handle_http_error / wrap_provider_http_error 保持与其他 handler 一致的错误映射。
+        走 _request_keyless 的 multipart 分支（_do_request files=...），享受与 scrape 等一致的
+        key 策略（auto/keyless/use_key）与错误映射。
         """
         from pathlib import Path
 
-        import httpx
-
-        from ..errors import ArgsError, NetworkError, wrap_provider_http_error
+        from ..errors import ArgsError
 
         cfg = self._cfg()
+        mode = self._resolve_mode(args, cfg)
         path = Path(args.file)
         if not path.is_file():
             raise ArgsError(f"firecrawl parse: 文件不存在: {args.file}", provider="firecrawl")
@@ -610,24 +717,10 @@ class FirecrawlProvider(Provider):
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             base_url=cfg.base_url,
-            headers=self._headers(cfg),
         ) as client:
-            try:
-                resp = await client.request("POST", "parse", files=files)
-            except httpx.HTTPError as e:
-                raise wrap_provider_http_error("firecrawl", e) from e
-            if resp.status_code >= 400:
-                raise http_mod.handle_http_error(
-                    "firecrawl",
-                    httpx.HTTPStatusError(
-                        f"firecrawl HTTP {resp.status_code}", request=resp.request, response=resp
-                    ),
-                )
-            try:
-                data = resp.json()
-            except ValueError as e:
-                raise NetworkError(f"firecrawl: 响应非 JSON ({e})", provider="firecrawl") from e
-        self._check(data, endpoint="parse")
+            data = await self._request_keyless(
+                client, "POST", "parse", cfg=cfg, mode=mode, files=files, endpoint="parse",
+            )
 
         # ScrapeResponse 结构：markdown 映射到 content（对齐 api-contract §2.1）
         inner = data.get("data") or {}

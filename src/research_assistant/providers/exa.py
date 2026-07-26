@@ -87,7 +87,7 @@ class ExaProvider(Provider):
                 help="Search the web with Exa (auto/keyword/neural/fast).",
                 args=[
                     ArgSpec(["query"], kind="positional", help="Search query."),
-                    ArgSpec(["--num-results"], type=int, default=10, help="Number of results (default 10)."),
+                    ArgSpec(["--num-results"], type=int, default=10, help="Number of results (1-100, default 10)."),
                     ArgSpec(
                         ["--type"],
                         choices=["auto", "keyword", "neural", "fast"],
@@ -124,7 +124,7 @@ class ExaProvider(Provider):
                 help="Find pages similar to a URL.",
                 args=[
                     ArgSpec(["url"], kind="positional", help="Source URL."),
-                    ArgSpec(["--num-results"], type=int, default=10, help="Number of results."),
+                    ArgSpec(["--num-results"], type=int, default=10, help="Number of results (1-100)."),
                 ],
                 handler=self.similar,
             ),

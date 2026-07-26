@@ -51,7 +51,7 @@ class BrowserProvider(Provider):
                         help="Search engine (default bing-intl; intl avoids CN-sensitive-word filtering).",
                     ),
                     ArgSpec(["--limit"], type=int, default=10, help="Min results to collect (default 10)."),
-                    ArgSpec(["--max-pages"], type=int, default=10, help="Max pages to paginate (default 10)."),
+                    ArgSpec(["--max-pages"], type=int, default=10, help="Max pages to paginate (default 10; engine may offer fewer)."),
                 ],
                 handler=self.search,
             ),

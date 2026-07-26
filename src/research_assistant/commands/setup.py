@@ -18,19 +18,16 @@ from ..config import Config, ProviderConfig, load, save
 from ..errors import ArgsError, ResearchAssistantError
 from .. import targets as targets_mod
 from .. import installer
+from ._provider_meta import PROVIDER_META
 
 NAME = "setup"
 ALIASES: list[str] = ["init"]
 HELP = "Configure providers/proxy/browser and optionally install managed skill/agent."
 
-# 已知 provider 类型 + 是否需要 model
+# 已知 provider 类型 + 是否需要 model（从共享元数据派生，单源；setup 只用 needs_model/label/default_base）
 _PROVIDER_TYPES: dict[str, dict[str, Any]] = {
-    "openai_compat": {"needs_model": True, "label": "OpenAI-compatible (search/LLM)", "default_base": ""},
-    "locate": {"needs_model": True, "label": "locate 模型 (openai 兼容小模型)", "default_base": ""},
-    "exa": {"needs_model": False, "label": "Exa", "default_base": "https://api.exa.ai"},
-    "tavily": {"needs_model": False, "label": "Tavily", "default_base": "https://api.tavily.com"},
-    "firecrawl": {"needs_model": False, "label": "Firecrawl", "default_base": "https://api.firecrawl.dev/v2"},
-    "context7": {"needs_model": False, "label": "Context7", "default_base": "https://context7.com"},
+    t: {"needs_model": m.needs_model, "label": m.label, "default_base": m.default_base}
+    for t, m in PROVIDER_META.items()
 }
 
 

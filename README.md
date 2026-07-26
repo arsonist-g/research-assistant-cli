@@ -73,6 +73,7 @@ research-assistant locate <md_path> "<q>"      # anchor-based relevance scan
 
 # Management
 research-assistant setup                       # configure + install skill/agent
+research-assistant config fields               # show each provider's required config fields
 research-assistant doctor [--show-config]      # connectivity diagnostics
 research-assistant skills status               # managed skill/agent freshness
 ```
