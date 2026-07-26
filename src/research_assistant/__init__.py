@@ -4,4 +4,9 @@
 + locate（锚点速览）+ setup/skills/doctor，通过 npm 包分发。
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("research-assistant")
+except PackageNotFoundError:  # 源码运行（未 pip install）时的兜底
+    __version__ = "0.0.0.dev0"
