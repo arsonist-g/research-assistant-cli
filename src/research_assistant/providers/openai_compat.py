@@ -42,8 +42,9 @@ def resolve_cfg(config: Config, provider_type: str = "openai_compat") -> Provide
     cfg = config.require_provider(provider_type)
     if not cfg.api_key:
         raise ArgsError(f"{provider_type}: 缺少 api_key", provider=provider_type)
+    # base_url 默认 OpenAI 官方（含 /v1/）；用 OpenAI 兼容渠道时 base_url 需自带 /v1/（如 https://host/v1）
     if not cfg.base_url:
-        raise ArgsError(f"{provider_type}: 缺少 base_url", provider=provider_type)
+        cfg.base_url = "https://api.openai.com/v1"
     if not cfg.model:
         raise ArgsError(f"{provider_type}: 缺少 model", provider=provider_type)
     return cfg
@@ -107,8 +108,12 @@ async def _stream_chat(client: httpx.AsyncClient, body: dict[str, Any], provider
             search_results: list[Any] = []
             usage: dict[str, Any] | None = None
             role = "assistant"
+            raw_non_sse: list[str] = []  # 非 data: 行：网关可能 HTTP 200 却返回 body JSON error（非 SSE）
             async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    raw_non_sse.append(line)
                     continue
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
@@ -140,6 +145,25 @@ async def _stream_chat(client: httpx.AsyncClient, body: dict[str, Any], provider
         from ..errors import wrap_provider_http_error
 
         raise wrap_provider_http_error(provider_type, e) from e
+
+    # 网关 HTTP 200 却没给 SSE chunk：body 可能是 JSON error 或 HTML 错误页（上游不可用等）。
+    # 别静默返回空 content（否则用户以为 research-assistant 坏，实际是 model 上游）。
+    if not content_parts and raw_non_sse:
+        raw = "\n".join(raw_non_sse)
+        msg: str | None = None
+        try:
+            err_body = json.loads(raw)
+            if isinstance(err_body, dict) and err_body.get("error"):
+                err = err_body["error"]
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+        except json.JSONDecodeError:
+            pass
+        if msg:
+            raise ProviderError(f"{provider_type}: 上游返回错误 — {msg}", provider=provider_type)
+        raise ProviderError(
+            f"{provider_type}: 上游返回非 SSE 响应（HTTP 200，可能错误页/上游不可用）: {raw[:120]}",
+            provider=provider_type,
+        )
 
     message: dict[str, Any] = {"role": role, "content": "".join(content_parts)}
     if citations:

@@ -86,7 +86,7 @@ base_url = "https://api.exa.ai"
 
 [[provider]]
 type     = "openai_compat"          # 驱动 `ask`
-base_url = "https://api.example.com/v1"
+base_url = "https://api.openai.com/v1"  # 默认；用兼容渠道时换成其地址（需含 /v1）
 api_key  = "..."
 model    = "grok-..."
 

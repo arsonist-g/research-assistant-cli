@@ -143,6 +143,21 @@ def _minimal_namespace(cap_name: str) -> argparse.Namespace:
         "ids": [],
         "url": "https://example.com",
         "urls": ["https://example.com"],
+        # search provider 完整字段：exa/tavily 等 handler 直接访问 ns.<attr>，缺就 AttributeError。
+        # 这里给全 superset，doctor 测任何 provider 的 search 能力都不缺字段。
+        "end_date": None,
+        "include_text": None,
+        "exclude_text": None,
+        "include_raw_content": None,
+        "chunks_per_source": None,
+        "country": None,
+        "days": None,
+        "include_images": False,
+        "include_image_descriptions": False,
+        "include_favicon": False,
+        "auto_parameters": False,
+        "engine": "bing-intl",
+        "max_pages": 10,
     }
     return argparse.Namespace(**base)
 

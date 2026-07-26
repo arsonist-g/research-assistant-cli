@@ -97,7 +97,8 @@ Notes:
 
 `ctx7 library "<name>" "<question>"` resolves a library id. `ctx7 docs /org/repo
 "<question>"` returns up-to-date official docs as markdown. It hits the authoritative source
-directly, so it is fast and accurate.
+directly, so it is fast and accurate. On Windows git bash / WSL, MSYS rewrites the leading `/`
+of `/org/repo` into a Windows path; write `//org/repo` there (PowerShell and cmd are unaffected).
 
 **For any library, framework, SDK, CLI, or cloud-service question, prefer `ctx7` over web
 search.** Do not grep the open web for API syntax, config keys, or version-migration notes
@@ -168,6 +169,8 @@ research-assistant tavily map <url> [--max-depth N] [--max-breadth N] [--limit N
 research-assistant tavily crawl <url> [--max-depth N] [--limit N] [--instructions TEXT] [--extract-depth basic|advanced] [--no-external] [--timeout N]   # recursive crawl, markdown per page
 
 # Tier 2: Firecrawl. Residential bandwidth. scrape and search are keyless; the rest need a key.
+# Keyless endpoints are sensitive to IP quality: residential/home IPs work; datacenter IPs may
+# hit 403 ("IP looks suspicious") and need a home-bandwidth proxy.
 research-assistant firecrawl scrape <url>... [--format markdown|html] [--only-main-content] [--wait-for MS]   # batch markdown, keyless
 research-assistant firecrawl search "<query>" [--limit N] [--sources web|news] [--scrape]                      # keyless; --scrape returns full markdown per result
 research-assistant firecrawl map <url> [--limit N] [--include-subdomains]                                      # needs key
@@ -194,7 +197,7 @@ research-assistant search "<query>" [--providers exa,tavily,firecrawl,browser] [
 
 ```sh
 research-assistant ctx7 library "<name>" "<question>"       # resolve a library id
-research-assistant ctx7 docs /org/repo "<question>"         # up-to-date official docs
+research-assistant ctx7 docs /org/repo "<question>"         # up-to-date official docs (git bash/WSL: use //org/repo)
 ```
 
 ### C. Ask a web-enabled LLM in natural language (`ask`)
