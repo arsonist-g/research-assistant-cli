@@ -1,0 +1,35 @@
+{
+  "name": "research-assistant",
+  "version": "0.1.0",
+  "description": "Search/research sub-agent + concurrent search/fetch/locate CLI atomic tools for AI agents (Exa, Tavily, Firecrawl, Context7, OpenAI-compatible).",
+  "license": "MIT",
+  "homepage": "https://github.com/arsonist-g/research-assistant#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arsonist-g/research-assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/arsonist-g/research-assistant/issues"
+  },
+  "bin": {
+    "research-assistant": "npm/bin/research-assistant.js"
+  },
+  "files": [
+    "npm/",
+    "src/research_assistant/**/*.py",
+    "src/research_assistant/assets/**",
+    "src/research_assistant/loginstate/extension/**",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node npm/scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

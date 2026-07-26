@@ -1,0 +1,67 @@
+# === 安全红线：真实凭据绝不进版本控制 ===
+# doc/sample.md 含开发期真实 API key，绝不提交
+doc/sample.md
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.Python
+
+# === 虚拟环境 ===
+.venv/
+venv/
+env/
+.uv/
+# npm postinstall 创建的运行时 venv
+.research-assistant-python/
+
+# === npm ===
+node_modules/
+npm-debug.log*
+
+# === 运行时产物 ===
+# 落盘文档（网页副本 / 调研报告）
+tmp-doc/
+# 浏览器 profile（per-call 临时 profile）
+.profiles/
+# 浏览器进程锁（跨进程限流标记文件）
+.browser-locks/
+# 运行日志
+.logs/
+
+# === 任务跟踪（内部进度记录，对话式，不公开） ===
+task-tracker/
+
+# === 设计文档（开发期产物：PM / 架构 / 前后端设计、基线草稿，不公开） ===
+pm-design/
+backend-design/
+system-architecture/
+doc/
+sketch.md
+
+# === 中文审查版（skill / persona 的大写 -ZH.md，仅供人工审阅，不进仓库/不进包） ===
+# 注意：README-ZH.md 是公开中文 README，要进仓库，所以这里列具体文件而非 *-ZH.md 通配，
+# 否则会把 README-ZH.md 一并忽略。
+src/research_assistant/assets/skills/research-assistant/SKILL-ZH.md
+src/research_assistant/assets/researcher_persona-ZH.md
+
+# === 编辑器 / 系统 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === 测试 / 覆盖率 ===
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml

@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-assistant"
+version = "0.1.0"
+description = "Search/research sub-agent + a set of concurrent search/fetch/locate CLI atomic tools for AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "research-assistant" }]
+keywords = ["search", "research", "cli", "agent"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    # HTTP 客户端（各 provider 自写 HTTP，ADR-0010）
+    "httpx>=0.27",
+    # DrissionPage：CF 绕过兜底路径。直驱用户 Edge（不经自动化运行时，无注入痕迹）+
+    # DOM.getDocument(pierce) 穿透 closed shadow root 点 Turnstile checkbox（playwright 的
+    # performSearch 只穿透 UA shadow DOM，看不到 closed shadow root 里的 checkbox）。同步 API，
+    # browser.py 用 asyncio.to_thread 桥接到 async。
+    "DrissionPage>=4.1",
+    # pywin32：Windows 下隐藏 CF 兜底浏览器窗口（page.set.hide → Win32 ShowWindow SW_HIDE）。
+    # 窗口仍在（真 headed 渲染，CF 检测不到 headless），但不占视野。仅 Windows 需要。
+    "pywin32; sys_platform == 'win32'",
+    # HTML → markdown（浏览器回退路径用，ADR-0006 D6）
+    "trafilatura>=1.12",
+    # TOML 写入（setup 持久化配置，D3）
+    "tomli_w>=1.0",
+    # cookie daemon：单 aiohttp 进程同时承载 WS（扩展连）+ HTTP（fetch/doctor 调），ADR-0006
+    "aiohttp>=3.9",
+    # Python 3.10 没有 tomllib，需 tomli 读 TOML；3.11+ 内置 tomllib（环境标记自动按版本装）
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+# 测试依赖（开发期）。CI/贡献者：`uv pip install -e ".[dev]"` 安装。
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+research-assistant = "research_assistant.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/arsonist-g/research-assistant"
+
+[tool.hatch.build]
+# 中文审查版（SKILL-ZH.md / researcher_persona-ZH.md）仅供人工审阅：
+# 不进 git、不进发行包。installer 固定读 SKILL.md / researcher_persona.md，本就不会安装。
+exclude = [
+    "src/research_assistant/assets/skills/research-assistant/SKILL-ZH.md",
+    "src/research_assistant/assets/researcher_persona-ZH.md",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/research_assistant"]
+# assets/（SKILL.md、researcher 人设）与 loginstate/extension/（MV3 扩展）在包目录下，
+# 随 packages 递归包含，无需 force-include。
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live_cf: 真实 Cloudflare 绕过实机测试（启动浏览器、访问外部站点，慢且依赖网络；默认跳过，手动 `pytest -m live_cf` 运行）",
+    "live_browser: browser 平台 live 测试（启动浏览器、访问外部站点；默认跳过，手动 `pytest -m live_browser` 运行）",
+]
+# 默认排除实机测试，保持快速基线干净；命令行 `-m live_cf` / `-m live_browser` 会覆盖此项
+addopts = "-m 'not live_cf and not live_browser'"

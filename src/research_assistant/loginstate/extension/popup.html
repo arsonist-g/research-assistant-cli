@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: system-ui, sans-serif; width: 320px; margin: 0; padding: 12px; font-size: 13px; }
+    h3 { margin: 0 0 8px; font-size: 14px; }
+    .row { margin: 6px 0; display: flex; gap: 6px; align-items: center; }
+    input[type=number] { width: 90px; }
+    button { cursor: pointer; padding: 4px 10px; }
+    pre { white-space: pre-wrap; max-height: 160px; overflow: auto; background: #f4f4f4; padding: 6px; border-radius: 4px; }
+    .status { font-weight: 600; }
+    .ok { color: #080; } .bad { color: #c00; } .warn { color: #c80; }
+  </style>
+</head>
+<body>
+  <h3>Research Assistant Bridge</h3>
+  <div class="row">
+    <span>状态：</span><span id="status" class="status">—</span>
+    <span>cookie 数：</span><span id="count">—</span>
+  </div>
+  <div class="row">
+    <label>daemon 端口：</label>
+    <input id="port" type="number" min="1" max="65535" />
+    <button id="save">保存</button>
+    <button id="reset" title="强制重连">重连</button>
+  </div>
+  <pre id="logs"></pre>
+  <script src="popup.js"></script>
+</body>
+</html>

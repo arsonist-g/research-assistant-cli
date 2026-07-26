@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Research Assistant Bridge",
+  "version": "0.1.0",
+  "description": "Expose this browser's cookies to the local research-assistant fetch tool (reads via chrome.cookies, sends over a local WebSocket).",
+  "permissions": ["cookies", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Research Assistant Bridge"
+  }
+}
