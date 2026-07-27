@@ -13,11 +13,16 @@ search 是「调搜索 API」的纯粹语义：把 query 发给 exa/tavily（等
 from __future__ import annotations
 
 import argparse
+import asyncio
+import logging
 from typing import Any
 
 from .. import providers as providers_pkg
 from ..config import Config
 from ..errors import ArgsError
+from ..providers.base import bounded_int
+
+logger = logging.getLogger("research_assistant.commands.search")
 
 NAME = "search"
 ALIASES: list[str] = []
@@ -45,7 +50,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Comma list of search-source providers (default: configured exa,tavily + browser). "
         "e.g. exa,tavily,firecrawl,browser.",
     )
-    p.add_argument("--limit", type=int, default=5, help="Max results to take per provider (default 5).")
+    p.add_argument("--limit", type=int, default=5, help="Max results per provider (default 5).")
+    p.add_argument("--include-domains", nargs="+", metavar="DOMAIN", help="Restrict to domains (exa/tavily; browser ignores).")
+    p.add_argument("--exclude-domains", nargs="+", metavar="DOMAIN", help="Drop these domains (exa/tavily; browser ignores).")
+    p.add_argument("--start-date", metavar="YYYY-MM-DD", help="Results published on/after this date (exa/tavily; browser ignores).")
+    p.add_argument("--end-date", metavar="YYYY-MM-DD", help="Results published on/before this date (exa/tavily; browser ignores).")
+    p.add_argument("--text", action="store_true", help="Include page text per result (exa/tavily; browser ignores).")
+    p.add_argument("--timeout", type=bounded_int(1, 300), default=60, help="Overall search timeout in seconds per provider (1-300, default 60); a slow source is skipped, others continue.")
     p.set_defaults(_handler=run)
 
 
@@ -61,7 +72,25 @@ async def run(args: argparse.Namespace, config: Config) -> dict[str, Any]:
     used: list[str] = []
     for ptype in wanted:
         try:
-            extra = await _from_provider(config, ptype, args.query, args.limit)
+            extra = await asyncio.wait_for(
+                _from_provider(
+                    config,
+                    ptype,
+                    query=args.query,
+                    limit=args.limit,
+                    include_domains=args.include_domains,
+                    exclude_domains=args.exclude_domains,
+                    start_date=args.start_date,
+                    end_date=args.end_date,
+                    text=args.text,
+                    timeout=args.timeout,
+                ),
+                timeout=args.timeout,
+            )
+        except asyncio.TimeoutError:
+            # 单家超时不阻断其余源；跳过该家继续聚合
+            logger.warning("search: provider %s 超时（%ds），跳过", ptype, args.timeout)
+            continue
         except Exception:
             # 单家失败不阻断其余源（如某家未配置/限流）；跳过该家继续聚合
             continue
@@ -72,9 +101,25 @@ async def run(args: argparse.Namespace, config: Config) -> dict[str, Any]:
 
 
 async def _from_provider(
-    config: Config, ptype: str, query: str, limit: int
+    config: Config,
+    ptype: str,
+    *,
+    query: str,
+    limit: int,
+    include_domains: list[str] | None,
+    exclude_domains: list[str] | None,
+    start_date: str | None,
+    end_date: str | None,
+    text: bool,
+    timeout: int = 60,
 ) -> list[dict[str, Any]]:
-    """调用指定 provider 的 search 能力（复用插件实例），返回候选源列表。"""
+    """调用指定 provider 的 search 能力（复用插件实例），返回候选源列表。
+
+    search 层暴露的跨家通用参数（limit / include-domains / exclude-domains /
+    start-date / end-date / text）在此映射到各 provider 的原生字段；browser 不支持
+    域名/日期/正文过滤，这些对其静默忽略。各家专有参数（exa --type、tavily --topic 等）
+    不在 search 层暴露，要用请走 exa/tavily 子命令。
+    """
     classes = providers_pkg.all_provider_classes()
     pclass = classes.get(ptype)
     if pclass is None:
@@ -83,22 +128,25 @@ async def _from_provider(
     cap = next((c for c in provider.capabilities() if c.name == "search"), None)
     if cap is None:
         raise ArgsError(f"search: provider '{ptype}' 无 search 能力", provider=ptype)
+
     ns = argparse.Namespace(query=query)
-    # 给各 provider search 通用 flag 默认值，避免 AttributeError
+    # 跨家通用参数 → 各 provider 原生字段
+    ns.num_results = limit          # exa
+    ns.max_results = limit          # tavily
+    ns.limit = limit                # browser
+    ns.include_domains = include_domains   # exa/tavily 同名
+    ns.exclude_domains = exclude_domains
+    ns.start_date = start_date
+    ns.end_date = end_date
+    ns.text = bool(text)                          # exa: 含正文
+    ns.include_raw_content = "markdown" if text else None  # tavily: 含正文 → markdown
+    # 其余各 provider 专有字段默认值（handler 可能读取，避免 AttributeError）
     for attr, default in (
-        ("num_results", limit),
-        ("max_results", limit),
-        ("limit", limit),
         ("type", "auto"),
         ("depth", "basic"),
         ("topic", "general"),
-        ("text", False),
         ("highlights", False),
-        ("include_domains", None),
-        ("exclude_domains", None),
         ("category", None),
-        ("start_date", None),
-        ("end_date", None),
         ("scrape", False),
         ("sources", None),
         ("include_subdomains", False),
@@ -110,7 +158,6 @@ async def _from_provider(
         ("time_range", None),
         ("include_text", None),
         ("exclude_text", None),
-        ("include_raw_content", None),
         ("chunks_per_source", None),
         ("country", None),
         ("days", None),
@@ -123,6 +170,7 @@ async def _from_provider(
     ):
         if not hasattr(ns, attr):
             setattr(ns, attr, default)
+    ns.timeout = timeout  # browser search 整体超时（其余 provider 的 search handler 不读此字段）
     result = await cap.handler(ns)
     return _normalize_provider_results(result, limit)
 

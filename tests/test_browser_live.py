@@ -57,3 +57,20 @@ async def test_fetch_passes_cf_and_returns_content():
     assert md, f"fetch 返回空: {url}"
     assert "just a moment" not in md.lower(), "内容仍含 CF 挑战特征，疑似被拦"
     assert "release" in md.lower() or "grok" in md.lower(), f"正文不含预期关键词: {url}"
+
+
+async def test_fetch_timeout_aborts_within_budget():
+    """短 timeout + 慢页面：fetch_with_browser 必在合理时间内返回，证明 finally 杀 PID + shutdown 清理生效。
+
+    grok.com 有 CF 挑战，solve 至少数秒；timeout=2 必触发 per-future 超时。若 finally 的
+    先杀 PID 再 shutdown 失效，残余 worker 会干等到 solve 自然结束（最坏 1-2 分钟），elapsed 会破阈值。
+    """
+    import time
+    _skip_if_unusable()
+    url = "https://grok.com/release-notes"
+    start = time.monotonic()
+    await fetch_with_browser(_cfg(), [url], login=False, concurrency=1, timeout=2)
+    elapsed = time.monotonic() - start
+    assert elapsed < 25, (
+        f"fetch 用了 {elapsed:.1f}s，疑似 finally 杀 PID + shutdown 清理失效（残余 worker 干等）"
+    )

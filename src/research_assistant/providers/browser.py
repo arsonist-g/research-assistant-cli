@@ -15,7 +15,7 @@ from typing import Any
 from ..errors import ArgsError
 from ..fetch import fetch_with_browser, write_snapshot
 from ..fetch.search_engine import search_engine
-from .base import ArgSpec, Capability, Provider
+from .base import ArgSpec, Capability, Provider, bounded_int
 from .registry import register
 
 
@@ -34,8 +34,10 @@ class BrowserProvider(Provider):
                 args=[
                     ArgSpec(["urls"], kind="positional", nargs="+", metavar="URL", help="URL(s) to fetch."),
                     ArgSpec(["--no-login"], action="store_true", help="Do not inject login cookies (default injects)."),
-                    ArgSpec(["--concurrency"], type=int, default=4, help="Browser concurrency (default 4)."),
-                    ArgSpec(["--write"], metavar="PATH", help="Write markdown to this path (single URL only)."),
+                    ArgSpec(["--concurrency"], type=bounded_int(1, 16), default=4, help="Browser concurrency (1-16, default 4)."),
+                    ArgSpec(["--format"], choices=["markdown", "html"], default="markdown", help="Output format (default markdown)."),
+                    ArgSpec(["--timeout"], type=bounded_int(1, 300), default=60, help="Per-URL fetch timeout in seconds (1-300, default 60)."),
+                    ArgSpec(["--write"], metavar="PATH", help="Write content to this path (single URL only)."),
                 ],
                 handler=self.fetch,
             ),
@@ -52,6 +54,7 @@ class BrowserProvider(Provider):
                     ),
                     ArgSpec(["--limit"], type=int, default=10, help="Min results to collect (default 10)."),
                     ArgSpec(["--max-pages"], type=int, default=10, help="Max pages to paginate (default 10; engine may offer fewer)."),
+                    ArgSpec(["--timeout"], type=bounded_int(1, 300), default=60, help="Overall search timeout in seconds (1-300, default 60)."),
                 ],
                 handler=self.search,
             ),
@@ -63,7 +66,8 @@ class BrowserProvider(Provider):
             raise ArgsError("browser fetch: --write 仅支持单个 URL")
         use_login = not getattr(args_ns, "no_login", False)
         raw = await fetch_with_browser(
-            self.config, urls, login=use_login, concurrency=args_ns.concurrency
+            self.config, urls, login=use_login, concurrency=args_ns.concurrency,
+            fmt=args_ns.format, timeout=args_ns.timeout,
         )
         results: list[dict[str, Any]] = []
         for url in urls:
@@ -87,5 +91,6 @@ class BrowserProvider(Provider):
 
     async def search(self, args_ns: argparse.Namespace) -> dict[str, Any]:
         return await search_engine(
-            self.config, args_ns.query, args_ns.engine, args_ns.limit, args_ns.max_pages
+            self.config, args_ns.query, args_ns.engine, args_ns.limit, args_ns.max_pages,
+            timeout=args_ns.timeout,
         )

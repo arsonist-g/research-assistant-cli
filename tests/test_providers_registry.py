@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from research_assistant.providers import registry
-from research_assistant.providers.base import Capability, Provider
+from research_assistant.providers.base import Capability, Provider, bounded_int
 
 
 class TestDiscovery:
@@ -134,3 +136,29 @@ class TestBrowserProvider:
         names = {a.name_or_flags[0] for a in cap.args}
         assert "query" in names
         assert "--limit" in names
+
+
+class TestBoundedInt:
+    """bounded_int type 工厂：argparse 解析时校验 int 范围，越界/非整数抛 ArgumentTypeError。"""
+
+    def test_in_range_returns_int(self):
+        conv = bounded_int(1, 300)
+        assert conv("1") == 1       # 下界
+        assert conv("300") == 300   # 上界
+        assert conv("60") == 60     # 中间
+
+    def test_below_range_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bounded_int(1, 300)("0")
+
+    def test_above_range_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bounded_int(1, 300)("301")
+
+    def test_non_integer_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bounded_int(1, 300)("abc")
+
+    def test_message_contains_bounds(self):
+        with pytest.raises(argparse.ArgumentTypeError, match=r"1-300"):
+            bounded_int(1, 300)("999")

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import quote_plus, urljoin
@@ -195,7 +196,7 @@ def _extract_page_links(page: Any, engine: str) -> list[tuple[int, str]]:
     return sorted(by_num.items())
 
 
-def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pages: int) -> list[dict[str, str]]:
+def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pages: int, timeout: int = 60) -> list[dict[str, str]]:
     """同步：headless DrissionPage，1 browser 多 tab 智能并发翻页。
 
     1. 首页（tab0）：get → _wait_network_idle → CF 兜底 solve → _extract_results(N) + _extract_page_links。
@@ -210,6 +211,7 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
         )
     from DrissionPage import ChromiumPage
 
+    deadline = time.monotonic() + timeout  # 整体超时：超时退出翻页，返回已收集的
     profile_dir = _new_profile_dir()
     lock_dir = _acquire_browser_slot(config)
     page = None
@@ -262,7 +264,7 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
         idx = 0  # page_links 游标
         pages_done = 1  # 含首页
         pages_cap = max(1, max_pages)
-        while len(collected) < limit and idx < len(page_links) and pages_done < pages_cap:
+        while len(collected) < limit and idx < len(page_links) and pages_done < pages_cap and time.monotonic() < deadline:
             # 据已抓每页结果数推断本批该抓多少页（ceil 补足，受剩余页数额度约束）
             need_for_limit = math.ceil(max(limit - len(collected), 1) / max(per_page_est, 1))
             batch_size = max(1, min(need_for_limit, pages_cap - pages_done))
@@ -313,12 +315,13 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
 
 async def search_engine(
     config: Config, query: str, engine: str = "bing-intl", limit: int = 10,
-    max_pages: int = DEFAULT_MAX_PAGES,
+    max_pages: int = DEFAULT_MAX_PAGES, timeout: int = 60,
 ) -> dict[str, Any]:
     """浏览器搜索引擎：返回 {query, engine, results[]{url, title, snippet}}。
 
     无头 DrissionPage：首页 → 从页数表抽所有页码链接 → 按页码升序逐个访问，累计 ≥ limit 去重，
     最多 max_pages 页（默认 10）。engine 默认 bing-intl（国内必应对部分敏感词会拒搜，国际版更稳）。
+    timeout 限整体查询时长（秒），超时退出翻页、返回已收集的部分结果。
     """
-    results = await asyncio.to_thread(_run_engine_sync, config, query, engine, limit, max_pages)
+    results = await asyncio.to_thread(_run_engine_sync, config, query, engine, limit, max_pages, timeout)
     return {"query": query, "engine": engine, "results": results}

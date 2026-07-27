@@ -41,8 +41,22 @@ def _wrap_provider_handler(bound_handler: Any) -> Any:
     return runner
 
 
+class _JSONArgumentParser(argparse.ArgumentParser):
+    """argparse 参数错误（choices/type/缺参/未知/互斥）转 ArgsError → stdout JSON + exit 2。
+
+    默认 argparse 走 stderr 文本 + sys.exit(2)，不进 JSON error 体系；此处 error() 改为
+    raise ArgsError，被 main() 的 except ResearchAssistantError 捕获后 emit_json，与 handler
+    层错误（ArgsError）统一。add_subparsers 默认 parser_class=type(self)，故顶层用本类后，
+    所有子 parser（provider 嵌套、原生命令）自动继承，无需逐处传 parser_class。
+    -h/--help 走 print_help + exit(0)，不经过 error()，不受影响。
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise ArgsError(message)
+
+
 def _build_parser(config: Any) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _JSONArgumentParser(
         prog="research-assistant",
         description="搜索调研子 Agent + 可并发的搜索/爬取/定位 CLI 原子工具。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -90,7 +104,7 @@ def _build_parser(config: Any) -> argparse.ArgumentParser:
 
 def _parse_globals(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     """预解析全局 flags（允许出现在命令任意位置），返回 (globals_ns, remaining_argv)。"""
-    pre = argparse.ArgumentParser(add_help=False)
+    pre = _JSONArgumentParser(add_help=False)
     pre.add_argument("--config", default=None, dest="config_path")
     pre.add_argument("--output", default="json", choices=["json", "markdown"])
     pre.add_argument("--proxy", default=None, help="Proxy URL override (横切); 'none' = force direct, no proxy.")
@@ -103,39 +117,33 @@ def _parse_globals(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
 def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    g_ns, remaining = _parse_globals(argv)
 
-    if g_ns.version:
-        print(f"research-assistant {__version__}")
-        return 0
-
-    # 代理横切覆盖（CLI --proxy 优先级最高，ADR-0007）
-    proxy_mod.set_override(g_ns.proxy)
-
-    # 加载配置（文件不存在=首次使用，返回空 Config）
     try:
+        g_ns, remaining = _parse_globals(argv)
+
+        if g_ns.version:
+            print(f"research-assistant {__version__}")
+            return 0
+
+        # 代理横切覆盖（CLI --proxy 优先级最高，ADR-0007）
+        proxy_mod.set_override(g_ns.proxy)
+
+        # 加载配置（文件不存在=首次使用，返回空 Config）
         config = load_config(g_ns.config_path)
-    except ResearchAssistantError as e:
-        emit_json(e.to_json())
-        emit_error(e.message)
-        return e.exit_code()
 
-    # 构建并解析子命令树
-    parser = _build_parser(config)
-    try:
+        # 构建并解析子命令树（参数错误由 _JSONArgumentParser.error 转 ArgsError）
+        parser = _build_parser(config)
         args_ns = parser.parse_args(remaining)
-    except SystemExit as e:  # argparse 解析失败/--help 已退出
-        code = e.code if isinstance(e.code, int) else 2
-        return code
 
-    handler = getattr(args_ns, "_handler", None)
-    if handler is None:  # 只有顶层命令没有 sub（理论上 required=True 已挡）
-        parser.print_help(sys.stderr)
-        return 2
+        handler = getattr(args_ns, "_handler", None)
+        if handler is None:  # 只有顶层命令没有 sub（理论上 required=True 已挡）
+            parser.print_help(sys.stderr)
+            return 2
 
-    try:
         result = asyncio.run(handler(args_ns, config))
-    except ResearchAssistantError as e:
+    except SystemExit as e:  # -h/--help 正常退出（argparse print_help + exit(0)）
+        return e.code if isinstance(e.code, int) else 2
+    except ResearchAssistantError as e:  # ArgsError/ConfigError/... 统一 stdout JSON
         emit_json(e.to_json())
         emit_error(e.message)
         return e.exit_code()

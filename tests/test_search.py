@@ -1,8 +1,12 @@
-"""search 聚合命令单元测试：默认 providers 解析（含 browser 免配置兜底 → 开箱即用）。"""
+"""search 聚合命令单元测试：默认 providers 解析、--timeout 越界校验、慢源超时跳过。"""
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 from research_assistant.commands.search import _resolve_wanted
+from research_assistant.config import Config
 
 
 def test_default_includes_browser_when_nothing_configured():
@@ -29,3 +33,27 @@ def test_explicit_providers_overrides_default():
 
 def test_explicit_providers_can_be_browser_only():
     assert _resolve_wanted("browser", set()) == ["browser"]
+
+
+async def test_run_skips_slow_provider(monkeypatch):
+    """某 provider 慢于 --timeout → wait_for 超时，跳过该源，其余继续聚合（不阻塞）。"""
+    from research_assistant.commands import search as search_cmd
+
+    async def fake_from_provider(config, ptype, **kw):
+        if ptype == "slow":
+            await asyncio.sleep(5)  # 远超 timeout=1
+            return [{"url": "slow"}]
+        return [{"url": f"{ptype}-1"}]
+
+    monkeypatch.setattr(search_cmd, "_from_provider", fake_from_provider)
+
+    args = SimpleNamespace(
+        query="q", providers="fast,slow", limit=5, timeout=1,
+        include_domains=None, exclude_domains=None,
+        start_date=None, end_date=None, text=False,
+    )
+    result = await search_cmd.run(args, Config())
+
+    assert result["sources"] == ["fast"]  # slow 超时被跳过
+    assert any(c["url"] == "fast-1" for c in result["candidates"])
+    assert all(c["url"] != "slow" for c in result["candidates"])

@@ -20,7 +20,7 @@ import sys
 import time
 import uuid
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -482,10 +482,11 @@ def _wait_network_idle(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_one_tab(tab: Any, url: str) -> str | None:
-    """单 tab 抓取：导航 → CF solve → 网络静默 → html2md。不建 browser/profile（由调用方建）。
+def _fetch_one_tab(tab: Any, url: str, fmt: str = "markdown") -> str | None:
+    """单 tab 抓取：导航 → CF solve → 网络静默 → (html 直出 | html2md)。不建 browser/profile（由调用方建）。
 
     tab 是 ChromiumPage/ChromiumTab/MixTab（同套 API，cfbypass.solve 兼容）。
+    fmt=html 时返回原始 html（绕过 trafilatura）；否则走 html2md 抽正文。
     失败（CF 未过/内容过短）抛异常，由调用方捕获记 None。
     """
     logger.info("GET %s", url)
@@ -499,10 +500,12 @@ def _fetch_one_tab(tab: Any, url: str) -> str | None:
     html = tab.html or ""
     if len(html) < 200:
         raise AntibotError(f"CF 绕过后内容仍过短: {url}")
+    if fmt == "html":
+        return html  # 原始 html，绕过 trafilatura
     return html_to_md(html, url)
 
 
-def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]]) -> str | None:
+def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown") -> str | None:
     """单 url 同步：建 1 browser + tab0，hide + 注 cookie，_fetch_one_tab(tab0)，关 browser。"""
     from DrissionPage import ChromiumPage
 
@@ -516,7 +519,7 @@ def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]]) 
         browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
         _hide_window(page)
         _inject_cookies_dp(page, cookies)
-        return _fetch_one_tab(page, url)  # page(ChromiumPage)即 tab0，可直接喂 _fetch_one_tab
+        return _fetch_one_tab(page, url, fmt)  # page(ChromiumPage)即 tab0，可直接喂 _fetch_one_tab
     finally:
         _close_browser(page, browser_pid)
         _safe_rmtree(profile_dir)
@@ -524,24 +527,29 @@ def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]]) 
 
 
 async def _fetch_with_stealth(
-    config: Config, url: str, cookies: list[dict[str, Any]]
+    config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown"
 ) -> str | None:
     """单 url 薄包装（建 browser+tab0 调 _fetch_one_tab）。供 test_cf_live 与单 url 用。"""
     if _channel_executable(config.browser.channel) is None:
         raise ResearchAssistantError(
             f"未找到本地浏览器 ({config.browser.channel})，浏览器抓取不可用"
         )
-    return await asyncio.to_thread(_fetch_single_sync, config, url, cookies)
+    return await asyncio.to_thread(_fetch_single_sync, config, url, cookies, fmt)
 
 
 def _fetch_all_tabs_sync(
-    config: Config, urls: list[str], cookies: list[dict[str, Any]], concurrency: int
+    config: Config, urls: list[str], cookies: list[dict[str, Any]], concurrency: int,
+    fmt: str = "markdown", timeout: float = 60.0,
 ) -> dict[str, str | None]:
     """多 url 1 浏览器多 tab：建 browser + tab0，hide + 注 cookie（共享存储），主线程 new_tab 建 N tab，
-    ThreadPoolExecutor 并发各 tab _fetch_one_tab。失败 url 记 None，不抛。
+    ThreadPoolExecutor 并发各 tab _fetch_one_tab。单 tab 超过 timeout 秒记 None 不等待。
 
     线程安全：new_tab（browser 级）只主线程调；各 tab 的 get/solve/listen/html/close（tab 级独立 WS）
     在工作线程，单 tab 内顺序。
+
+    超时清理：主线程逐 future.result(timeout)，超时的 tab 记 None；全部处理完后 finally 先
+    _close_browser（杀 browser PID，让残余 worker 的 CDP 断开抛异常退出），再 shutdown 线程池，
+    避免 shutdown 干等残余 worker（Python 线程不能 kill，但杀进程能连带解阻塞）。
     """
     from DrissionPage import ChromiumPage
 
@@ -549,6 +557,7 @@ def _fetch_all_tabs_sync(
     lock_dir = _acquire_browser_slot(config)
     page = None
     browser_pid = 0
+    ex: ThreadPoolExecutor | None = None
     try:
         _write_suppress_prefs(profile_dir)
         page = ChromiumPage(_build_dp_options(config, profile_dir))
@@ -570,7 +579,7 @@ def _fetch_all_tabs_sync(
             i, url = idx_url
             tab = tabs[i]
             try:
-                md = _fetch_one_tab(tab, url)
+                md = _fetch_one_tab(tab, url, fmt)
                 return url, md
             except Exception as e:
                 logger.warning("tab 抓取失败 %s: %s", url, e)
@@ -582,12 +591,25 @@ def _fetch_all_tabs_sync(
                     except Exception:
                         pass
 
-        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-            for url, md in ex.map(work, enumerate(urls)):
+        ex = ThreadPoolExecutor(max_workers=max(1, concurrency))
+        futures = {ex.submit(work, (i, url)): url for i, url in enumerate(urls)}
+        for fut in futures:
+            url = futures[fut]
+            try:
+                _, md = fut.result(timeout=timeout)
                 results[url] = md
+            except FutureTimeoutError:
+                logger.warning("tab 抓取超时 %s（%.0fs），记失败", url, timeout)
+                results[url] = None
+            except Exception as e:
+                logger.warning("tab 抓取异常 %s: %s", url, e)
+                results[url] = None
         return results
     finally:
+        # 先杀 browser：残余 worker 的 CDP 断开、抛异常退出，shutdown 才不干等
         _close_browser(page, browser_pid)
+        if ex is not None:
+            ex.shutdown(wait=True)
         _safe_rmtree(profile_dir)
         _release_browser_slot(lock_dir)
 
@@ -598,11 +620,14 @@ async def fetch_with_browser(
     *,
     login: bool = True,
     concurrency: int = 4,
+    fmt: str = "markdown",
+    timeout: float = 60.0,
 ) -> dict[str, str | None]:
     """批量用 headed 浏览器抓取（1 browser 多 tab，fetch 浏览器层与 browser fetch 共用）。
 
-    返回 {url: markdown_or_None}。失败（CF 未过/无浏览器/内容过短/进程数达上限）记 None 或抛
-    ConfigError（进程上限）。多 url 并发（1 browser + N tab，ThreadPoolExecutor 限并发数）。
+    返回 {url: content_or_None}。fmt=html 时每页返回原始 html，否则 markdown（trafilatura 抽正文）。
+    单 tab 超过 timeout 秒记 None 不阻塞整批；finally 杀 browser PID 让残余 worker 解阻塞退出。
+    失败（CF 未过/无浏览器/内容过短/进程数达上限）记 None 或抛 ConfigError（进程上限）。
     """
     cleanup_orphans()
 
@@ -610,4 +635,6 @@ async def fetch_with_browser(
     if login:
         cookies = await _get_login_cookies(config)
 
-    return await asyncio.to_thread(_fetch_all_tabs_sync, config, urls, cookies, concurrency)
+    return await asyncio.to_thread(
+        _fetch_all_tabs_sync, config, urls, cookies, concurrency, fmt, timeout
+    )

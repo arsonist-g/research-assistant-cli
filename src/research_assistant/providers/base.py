@@ -12,10 +12,30 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..config import Config
+
+
+def bounded_int(lo: int, hi: int) -> Callable[[str], int]:
+    """argparse type 工厂：解析时校验 int 且 lo<=v<=hi，越界抛 ArgumentTypeError。
+
+    声明在 ArgSpec.type，与 choices 同层（都在 argparse 解析时校验），错误走统一的
+    argparse error → stdout JSON 通道（cli._JSONArgumentParser.error 接管）。
+    """
+
+    def _convert(raw: str) -> int:
+        try:
+            v = int(raw)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"需为整数（得到 {raw!r}）")
+        if not (lo <= v <= hi):
+            raise argparse.ArgumentTypeError(f"需在 {lo}-{hi} 之间（得到 {v}）")
+        return v
+
+    return _convert
 
 
 @dataclass

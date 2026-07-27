@@ -185,15 +185,19 @@ research-assistant firecrawl monitor   # needs key; list your team's currently a
 research-assistant firecrawl parse <file> [--format markdown|html|json ...] [--pdf-mode fast|auto|ocr] [--max-pages N (1-10000)]   # keyless; upload a local PDF/DOCX/HTML → markdown/json (no URL needed)
 
 # Tier 3: real browser. fetch auto-escalates (normal API, then headed browser with CF auto-detect).
-research-assistant fetch <url> [<url>...] [--concurrency N] [--login|--no-login] [--no-browser] [--output PATH]
+research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [--login|--no-login] [--no-browser] [--format markdown|html|text] [--timeout N (1-300, default 60)] [--write PATH]   # --format used by each source that supports it (else markdown); --timeout per-URL (both normal API and browser layers); --write PATH saves (single URL), else auto-named webcopy-<slug>-<ts>-<rand>.md
 
 # browser platform: direct browser, no API attempt. fetch = headed + CF auto-detect; search = headless engine.
-research-assistant browser fetch <url>... [--no-login] [--concurrency N] [--write PATH]   # skip the API, straight to the headed browser (--write, not global --output)
-research-assistant browser search "<query>" [--engine bing-cn|bing-intl|google] [--limit N] [--max-pages N]   # headless search engine (default bing-intl)
+research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headed browser (--write, not global --output)
+research-assistant browser search "<query>" [--engine bing-cn|bing-intl|google] [--limit N] [--max-pages N] [--timeout N (1-300, default 60)]   # headless search engine (default bing-intl)
 
 # Aggregate the search sources in one call (default: configured exa,tavily + browser; browser is
 # always in the default set and works with zero config). Keywords, not an LLM.
-research-assistant search "<query>" [--providers exa,tavily,firecrawl,browser] [--limit N]
+# The filters below are cross-provider (map to each provider's native fields; browser ignores
+# domain/date/text). Provider-specific params are NOT here: exa --type/--category/--include-text,
+# tavily --topic/--depth/--time-range/--country, browser --engine/--max-pages. Use the matching
+# `exa search` / `tavily search` / `browser search` subcommand for those.
+research-assistant search "<query>" [--providers exa,tavily,firecrawl,browser] [--limit N] [--include-domains D ...] [--exclude-domains D ...] [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--text] [--timeout N (1-300, default 60)]   # per-provider timeout; a slow source is skipped, others continue
 ```
 
 ### B. Official docs, Context7 (authoritative; prefer over web search for library/SDK/CLI/cloud)
@@ -242,9 +246,31 @@ Every command also takes `-h`/`--help`: `research-assistant --help` lists all co
 3. For long pages, `locate` to pin relevant passages before reading.
 4. Synthesize YOUR answer from what you actually fetched; cite URLs.
 
-For large, multi-source investigations, delegate to the `researcher` sub-agent. It runs this
-workflow in an isolated context, writes a full report to `tmp-doc/`, and returns only a
-summary, keeping the main context clean.
+## Run it yourself, or delegate to the `researcher` sub-agent
+
+The workflow above is heavy. `search`, `fetch`, `ctx7`, and `locate` return candidate sources
+and full page bodies that you then read and synthesize. That reading is token-expensive and
+pollutes your main context. The `researcher` sub-agent exists to absorb that cost: it runs
+the same workflow in an isolated context, writes a full report to `tmp-doc/`, and returns
+only a summary, so the heavy reading never touches your context.
+
+The decision turns on one question: is the answer a single short call away, or does it need
+real research?
+
+- **Run a single short call in your own context only when one call settles it.** The clearest
+  case is one `ask`: a small question whose LLM answer plus its citation list is all you need.
+  An equivalent single short call qualifies too (one `ctx7 docs` for a single API signature,
+  one `fetch` of a URL you already trust). The output you keep must stay small: a short
+  markdown answer, a doc passage, a few URLs. The moment the task needs a second call, it has
+  left this branch; delegate it instead.
+- **For anything else, you MUST delegate to the `researcher` sub-agent.** Any time the answer
+  needs more than one call, needs reading or comparing several pages, or needs the search →
+  fetch → read → synthesize loop, delegate. The line is deliberately one-sided: a
+  one-sentence `ask` answer is the example of "run it yourself"; everything beyond that goes
+  to the sub-agent.
+
+When unsure, delegate. The sub-agent's isolated context is cheap to spend; your main context
+is not.
 
 ## Output and errors
 
