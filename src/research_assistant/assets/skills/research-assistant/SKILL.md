@@ -185,7 +185,7 @@ research-assistant firecrawl monitor   # needs key; list your team's currently a
 research-assistant firecrawl parse <file> [--format markdown|html|json ...] [--pdf-mode fast|auto|ocr] [--max-pages N (1-10000)]   # keyless; upload a local PDF/DOCX/HTML → markdown/json (no URL needed)
 
 # Tier 3: real browser. fetch auto-escalates (normal API, then headed browser with CF auto-detect).
-research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [--login|--no-login] [--no-browser] [--format markdown|html|text] [--timeout N (1-300, default 60)] [--write PATH]   # --format used by each source that supports it (else markdown); --timeout per-URL (both normal API and browser layers); --write PATH saves (single URL), else auto-named webcopy-<slug>-<ts>-<rand>.md
+research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [--login|--no-login] [--no-browser] [--format markdown|html|text] [--timeout N (1-300, default 60)] [--write PATH]   # --format used by each source that supports it (else markdown); --timeout per-URL (both normal API and browser layers); --write PATH saves (single URL), else auto-named tmp-doc/<YYYY-MM-DD>/scrape-<slug>-<HH-MM-SS>-<rand>.md
 
 # browser platform: direct browser, no API attempt. fetch = headed + CF auto-detect; search = headless engine.
 research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headed browser (--write, not global --output)
