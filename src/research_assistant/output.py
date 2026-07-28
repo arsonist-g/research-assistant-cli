@@ -49,7 +49,7 @@ def emit_error(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# markdown 渲染（标准 markdown：列表用 -、加粗 **、引用 >、斜体 _）
+# markdown 渲染（列表用 -；不加粗/斜体/引用：输出面向 AI 不渲染，是冗余噪音；反引号保留以标 url/路径边界）
 # ---------------------------------------------------------------------------
 
 
@@ -64,29 +64,29 @@ def _truncate(text: Any, limit: int = 120) -> str:
 def _markdown_render(data: Any, indent: int = 0) -> str:
     pad = "  " * indent
     if isinstance(data, dict):
-        # 错误体：引用块形式
+        # 错误体：单行 [ERROR] 形式（不加 > 引用/斜体，[ERROR] 标签本身已醒目）
         if "error" in data and isinstance(data["error"], dict):
             err = data["error"]
-            line = f"{pad}> **[ERROR] {err.get('code', 'INTERNAL')}**: {err.get('message', '')}"
+            line = f"{pad}[ERROR] {err.get('code', 'INTERNAL')}: {err.get('message', '')}"
             if err.get("provider"):
-                line += f" _(provider: {err['provider']})_"
+                line += f" (provider: {err['provider']})"
             return line
         # 结果列表（results / data / anchors 等）：先出元数据，再以列表渲染主体
         for list_key in ("results", "data", "anchors", "contents", "checks", "targets"):
             if list_key in data and isinstance(data[list_key], list):
                 return _render_list_markdown(data, list_key, indent)
-        # 普通 dict：每项一行 `- **key**: value`
+        # 普通 dict：每项一行 `- key: value`
         lines: list[str] = []
         for k, v in data.items():
             if isinstance(v, (dict, list)) and v:
-                lines.append(f"{pad}- **{k}**:")
+                lines.append(f"{pad}- {k}:")
                 lines.append(_markdown_render(v, indent + 1))
             else:
-                lines.append(f"{pad}- **{k}**: {_truncate(v, 200)}")
+                lines.append(f"{pad}- {k}: {_truncate(v, 200)}")
         return "\n".join(lines)
     if isinstance(data, list):
         if not data:
-            return f"{pad}_(空)_"
+            return f"{pad}(空)"
         # 聚合搜索等场景：列表元素带 source 标签 → 按 source 分组渲染，让每条可见其来自哪家
         if all(isinstance(x, dict) and "source" in x for x in data):
             return _render_list_grouped_by_source(data, indent)
@@ -127,7 +127,7 @@ def _render_list_item(item: Any, i: int, indent: int, skip_keys: tuple[str, ...]
             summary = " ".join(str(val).split())
             break
     if title:
-        head = f"{pad}{i}. **{title}**"
+        head = f"{pad}{i}. {title}"
         if extra:
             head += f" — `{extra}`"
         lines = [head]
@@ -166,7 +166,7 @@ def _render_list_grouped_by_source(items: list[Any], indent: int) -> str:
     idx = 0
     for src in order:
         grp = groups[src]
-        lines.append(f"{pad}**{src}** ({len(grp)}):")
+        lines.append(f"{pad}{src} ({len(grp)}):")
         for it in grp:
             idx += 1
             lines.append(_render_list_item(it, idx, indent + 1, skip_keys=("source",)))
@@ -183,10 +183,10 @@ def _render_list_markdown(data: dict[str, Any], list_key: str, indent: int) -> s
             continue
         if isinstance(v, (dict, list)):
             continue
-        lines.append(f"{pad}- **{k}**: {_truncate(v, 160)}")
+        lines.append(f"{pad}- {k}: {_truncate(v, 160)}")
     items = data[list_key]
     if lines:
         lines.append("")
-    lines.append(f"{pad}**{list_key}** ({len(items)}):")
+    lines.append(f"{pad}{list_key} ({len(items)}):")
     lines.append(_markdown_render(items, indent + 1))
     return "\n".join(lines)

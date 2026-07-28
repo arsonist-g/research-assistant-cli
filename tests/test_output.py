@@ -58,7 +58,7 @@ class TestMarkdownRender:
         assert "CONFIG" in line and "缺 key" in line and "exa" in line
 
     def test_empty_list_renders_placeholder(self):
-        assert _markdown_render([]) == "_(空)_"
+        assert _markdown_render([]) == "(空)"
 
     def test_dict_with_results_renders_list_section(self):
         data = {"count": 2, "results": [{"title": "A", "url": "http://a"}, {"title": "B"}]}
@@ -73,8 +73,9 @@ class TestMarkdownRender:
 
     def test_scalar_dict_renders_key_value(self):
         rendered = _markdown_render({"name": "researcher", "count": 3})
-        assert "**name**" in rendered and "researcher" in rendered
-        assert "**count**" in rendered and "3" in rendered
+        assert "- name:" in rendered and "researcher" in rendered
+        assert "- count:" in rendered and "3" in rendered
+        assert "**" not in rendered  # 不加粗：输出面向 AI，加粗是冗余噪音
 
     def test_long_snippet_not_truncated(self):
         """markdown 渲染时 snippet 不截断（长度由源决定，搜索引擎/浏览器给多长就多长）。"""
@@ -92,30 +93,31 @@ class TestMarkdownRender:
         ]
         rendered = _markdown_render(data)
         # 组顺序 = source 首次出现顺序（exa 先于 browser）
-        assert rendered.index("**exa**") < rendered.index("**browser**")
-        assert "**exa** (2):" in rendered
-        assert "**browser** (1):" in rendered
+        assert rendered.index("exa (2):") < rendered.index("browser (1):")
+        assert "exa (2):" in rendered
+        assert "browser (1):" in rendered
         # 编号跨组连续：exa A=1, C=2；browser B=3
-        assert "1. **A**" in rendered
-        assert "2. **C**" in rendered
-        assert "3. **B**" in rendered
+        assert "1. A" in rendered
+        assert "2. C" in rendered
+        assert "3. B" in rendered
         # 分组后靠组标题说明来源，组内不再重复列 source 字段
         assert "- source:" not in rendered
+        assert "**" not in rendered  # 不加粗
 
     def test_list_without_source_not_grouped(self):
         """无 source 标签的普通列表不分组（向后兼容 fetch/locate 等命令的输出）。"""
         data = [{"title": "A", "url": "http://a"}, {"title": "B", "url": "http://b"}]
         rendered = _markdown_render(data)
-        assert "**exa**" not in rendered and "**browser**" not in rendered
-        assert "1. **A**" in rendered and "2. **B**" in rendered
+        assert "exa (" not in rendered and "browser (" not in rendered  # 不分组（无组标题）
+        assert "1. A" in rendered and "2. B" in rendered
 
     def test_list_item_name_as_title_id_as_extra(self):
         """name + id 同时存在（如 ctx7 library）：name 当标题（人读），id 作反引号 extra，两个都不丢。"""
         data = {"results": [{"id": "/foo/bar", "name": "Foo Bar", "description": "a lib"}]}
         rendered = _markdown_render(data)
-        assert "**Foo Bar**" in rendered       # name 当标题
-        assert "`/foo/bar`" in rendered        # id 作 extra（反引号），链式仍可见
-        assert "a lib" in rendered             # description 仍作摘要
+        assert "Foo Bar" in rendered             # name 当标题
+        assert "`/foo/bar`" in rendered          # id 作 extra（反引号），链式仍可见
+        assert "a lib" in rendered               # description 仍作摘要
 
     def test_list_item_without_title_inlines_summary(self):
         """无 title/url/id 的项（如 ctx7 docs contents）：序号后直接接摘要，不留空标题行。"""
