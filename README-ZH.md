@@ -29,7 +29,7 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
   `locate` 在阅读前锁定 10k 行文件里哪些段落重要。
 - **插件式 provider** — 加一个 provider = 一个模块 + 一条配置；注册表自动发现，出现在 `--help`。
   无需改路由或 CLI。
-- **可脚本化** — stdout 默认 JSON（`--output markdown` 给人看）；语义退出码（`0` 成功 · `1` 内部
+- **可脚本化** — stdout 默认 markdown（人/AI 友好、省 token）；`--output json` 供脚本/jq 解析。语义退出码（`0` 成功 · `1` 内部
   · `2` 参数 · `3` 配置 · `4` 网络 · `5` 反爬）。可作为 skill 装进 Claude Code、Codex 等。
 
 ## 快速开始
@@ -105,8 +105,8 @@ max_browser_instances = 3           # 并发浏览器进程上限（跨 CLI）
 ## 工作原理
 
 每条命令是对 provider 插件的一个薄 async 包装。`search` 扇出到各 provider 合并；`fetch` 先走便宜
-的 API，失败升级到真实浏览器 + Cloudflare 绕过；`locate` 把文档切块、用小模型打分。输出默认 JSON
-供主 agent 解析，另有 markdown 模式给人看。
+的 API，失败升级到真实浏览器 + Cloudflare 绕过；`locate` 把文档切块、用小模型打分。输出默认
+markdown（可读、省 token）；`--output json` 出结构化 JSON 供解析。
 
 大型调研可分派 `researcher` 子 agent：它在隔离上下文里跑完整的 search → fetch → locate 流程，把报告
 写到磁盘，只返回摘要，重活阅读不污染主上下文。

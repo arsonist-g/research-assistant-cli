@@ -7,7 +7,10 @@ search 是「调搜索 API」的纯粹语义：把 query 发给 exa/tavily（等
 
 默认查已配置的 exa、tavily；--providers CSV 指定子集或加入 firecrawl（如 exa,firecrawl）。
 
-响应：{query, candidates[]{url, title?, snippet?}, sources[]}
+响应：{query, candidates[]{url, title?, snippet?, source}, sources[]}
+
+每个 candidate 带 source（来自哪家 provider）；输出按 source 分组展示，
+让不同搜索源的覆盖差异可见（exa/tavily/browser 主打方向不同，且各家能爬动的站点也不同）。
 """
 
 from __future__ import annotations
@@ -172,11 +175,11 @@ async def _from_provider(
             setattr(ns, attr, default)
     ns.timeout = timeout  # browser search 整体超时（其余 provider 的 search handler 不读此字段）
     result = await cap.handler(ns)
-    return _normalize_provider_results(result, limit)
+    return _normalize_provider_results(result, limit, ptype)
 
 
-def _normalize_provider_results(result: dict[str, Any], limit: int) -> list[dict[str, Any]]:
-    """把各 provider 的 search 响应归一为候选源列表。"""
+def _normalize_provider_results(result: dict[str, Any], limit: int, source: str) -> list[dict[str, Any]]:
+    """把各 provider 的 search 响应归一为候选源列表，每条打上 source 标签（来自哪家 provider）。"""
     items: list[Any] = []
     for key in ("results", "data", "contents"):
         raw = result.get(key)
@@ -197,6 +200,7 @@ def _normalize_provider_results(result: dict[str, Any], limit: int) -> list[dict
         snippet = it.get("content") or it.get("text") or it.get("snippet") or it.get("description")
         if snippet:
             item["snippet"] = snippet
+        item["source"] = source  # 标记来源 provider，供输出按源分类展示
         out.append(item)
     return out
 

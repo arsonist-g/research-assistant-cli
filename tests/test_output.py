@@ -82,3 +82,44 @@ class TestMarkdownRender:
         rendered = _markdown_render([{"title": "T", "snippet": long_snippet}])
         assert long_snippet in rendered  # 全文，未截断、无省略号
         assert "..." not in rendered
+
+    def test_list_grouped_by_source(self):
+        """带 source 标签的列表 → 按 source 分组渲染；组标题带计数，编号跨组连续，组内不重复列 source。"""
+        data = [
+            {"url": "http://a", "title": "A", "source": "exa"},
+            {"url": "http://b", "title": "B", "source": "browser"},
+            {"url": "http://c", "title": "C", "source": "exa"},
+        ]
+        rendered = _markdown_render(data)
+        # 组顺序 = source 首次出现顺序（exa 先于 browser）
+        assert rendered.index("**exa**") < rendered.index("**browser**")
+        assert "**exa** (2):" in rendered
+        assert "**browser** (1):" in rendered
+        # 编号跨组连续：exa A=1, C=2；browser B=3
+        assert "1. **A**" in rendered
+        assert "2. **C**" in rendered
+        assert "3. **B**" in rendered
+        # 分组后靠组标题说明来源，组内不再重复列 source 字段
+        assert "- source:" not in rendered
+
+    def test_list_without_source_not_grouped(self):
+        """无 source 标签的普通列表不分组（向后兼容 fetch/locate 等命令的输出）。"""
+        data = [{"title": "A", "url": "http://a"}, {"title": "B", "url": "http://b"}]
+        rendered = _markdown_render(data)
+        assert "**exa**" not in rendered and "**browser**" not in rendered
+        assert "1. **A**" in rendered and "2. **B**" in rendered
+
+    def test_list_item_name_as_title_id_as_extra(self):
+        """name + id 同时存在（如 ctx7 library）：name 当标题（人读），id 作反引号 extra，两个都不丢。"""
+        data = {"results": [{"id": "/foo/bar", "name": "Foo Bar", "description": "a lib"}]}
+        rendered = _markdown_render(data)
+        assert "**Foo Bar**" in rendered       # name 当标题
+        assert "`/foo/bar`" in rendered        # id 作 extra（反引号），链式仍可见
+        assert "a lib" in rendered             # description 仍作摘要
+
+    def test_list_item_without_title_inlines_summary(self):
+        """无 title/url/id 的项（如 ctx7 docs contents）：序号后直接接摘要，不留空标题行。"""
+        data = {"contents": [{"text": "纯文本片段", "source_url": "https://src.com"}]}
+        rendered = _markdown_render(data)
+        assert "1. 纯文本片段" in rendered                  # 序号与摘要在同一行
+        assert "- source_url: https://src.com" in rendered  # source_url 保留键名

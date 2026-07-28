@@ -106,7 +106,8 @@ def _parse_globals(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     """预解析全局 flags（允许出现在命令任意位置），返回 (globals_ns, remaining_argv)。"""
     pre = _JSONArgumentParser(add_help=False)
     pre.add_argument("--config", default=None, dest="config_path")
-    pre.add_argument("--output", default="json", choices=["json", "markdown"])
+    pre.add_argument("--output", default="markdown", choices=["json", "markdown"],
+                    help="Output format (default markdown, human/AI friendly; use json for scripts/jq).")
     pre.add_argument("--proxy", default=None, help="Proxy URL override (横切); 'none' = force direct, no proxy.")
     pre.add_argument("--verbose", action="store_true")
     pre.add_argument("--version", action="store_true")

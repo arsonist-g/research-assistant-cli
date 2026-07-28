@@ -1,7 +1,7 @@
 """输出渲染（横切约定 #5，api-contract.md §3/§4）。
 
-stdout 默认 JSON（供脚本解析）；--output markdown 给人/AI 可读的 markdown。
-错误：stdout 仍出 JSON `{error:{...}}`（供脚本解析），stderr 同时出一行人类可读提示。
+stdout 默认 markdown（对人/AI 友好、省 token）；--output json 出结构化 JSON（供脚本/jq 解析）。
+错误：stdout 仍出 JSON `{error:{...}}`（错误体始终 JSON，便于程序判定），stderr 同时出一行人类可读提示。
 
 格式而非受众：json 是结构化格式、markdown 是可读格式，二者对举；
 不再用 "human" 这种指代受众的词（它其实就是 markdown）。
@@ -87,39 +87,91 @@ def _markdown_render(data: Any, indent: int = 0) -> str:
     if isinstance(data, list):
         if not data:
             return f"{pad}_(空)_"
+        # 聚合搜索等场景：列表元素带 source 标签 → 按 source 分组渲染，让每条可见其来自哪家
+        if all(isinstance(x, dict) and "source" in x for x in data):
+            return _render_list_grouped_by_source(data, indent)
         lines: list[str] = []
         for i, item in enumerate(data, 1):
-            if isinstance(item, dict):
-                title = item.get("title") or item.get("url") or item.get("id") or item.get("name") or ""
-                extra = item.get("url") if item.get("url") != title else ""
-                summary_keys = ("content", "text", "snippet", "description", "markdown")
-                summary = ""
-                for sk in summary_keys:
-                    val = item.get(sk)
-                    if val:
-                        # 摘要/正文不截断：长度由源决定（搜索引擎/浏览器给多长就多长），
-                        # 只合并空白（含换行）避免破坏 markdown，不丢内容
-                        summary = " ".join(str(val).split())
-                        break
-                head = f"{pad}{i}. **{title}**" if title else f"{pad}{i}."
-                if extra and extra != title:
-                    head += f" — `{extra}`"
-                lines.append(head)
-                if summary:
-                    lines.append(f"{pad}   {summary}")
-                # 次要字段（子列表项）
-                for k, v in item.items():
-                    if k in ("title", "url", "id", "name", "content", "text", "snippet", "description", "markdown"):
-                        continue
-                    if isinstance(v, (dict, list)):
-                        continue
-                    if v in (None, "", 0, 0.0):
-                        continue
-                    lines.append(f"{pad}   - {k}: {_truncate(v, 80)}")
-            else:
-                lines.append(f"{pad}{i}. {item}")
+            lines.append(_render_list_item(item, i, indent))
         return "\n".join(lines)
     return f"{pad}{_truncate(data, 400)}"
+
+
+# 列表项的标题/正文字段（渲染时单独处理，不当次要字段重复列出）
+_LIST_ITEM_PRIMARY = ("title", "url", "id", "name", "content", "text", "snippet", "description", "markdown")
+
+
+def _render_list_item(item: Any, i: int, indent: int, skip_keys: tuple[str, ...] = ()) -> str:
+    """渲染列表中的单项：标题行 + 摘要 + 次要字段。
+
+    skip_keys：额外跳过不渲染的字段（分组渲染时传 ("source",)，避免与组标题重复）。
+    """
+    pad = "  " * indent
+    if not isinstance(item, dict):
+        return f"{pad}{i}. {item}"
+    # 标题优先级：title > name > url > id（name 比 url/id 更适合人读，如库名 vs 路径/网址）
+    title = item.get("title") or item.get("name") or item.get("url") or item.get("id") or ""
+    # 标题外的附加标识，反引号呈现（url 优先，其次 id；与 title 不同才显示）
+    extra = ""
+    for ek in ("url", "id"):
+        ev = item.get(ek)
+        if ev and ev != title:
+            extra = ev
+            break
+    summary = ""
+    for sk in ("content", "text", "snippet", "description", "markdown"):
+        val = item.get(sk)
+        if val:
+            # 摘要/正文不截断：长度由源决定（搜索引擎/浏览器给多长就多长），
+            # 只合并空白（含换行）避免破坏 markdown，不丢内容
+            summary = " ".join(str(val).split())
+            break
+    if title:
+        head = f"{pad}{i}. **{title}**"
+        if extra:
+            head += f" — `{extra}`"
+        lines = [head]
+        if summary:
+            lines.append(f"{pad}   {summary}")
+    else:
+        # 无标题项（如纯文本片段列表）：序号后直接接摘要，避免空标题行
+        lines = [f"{pad}{i}. {summary}".rstrip() if summary else f"{pad}{i}."]
+    # 次要字段（子列表项）
+    for k, v in item.items():
+        if k in _LIST_ITEM_PRIMARY or k in skip_keys:
+            continue
+        if isinstance(v, (dict, list)):
+            continue
+        if v in (None, "", 0, 0.0):
+            continue
+        lines.append(f"{pad}   - {k}: {_truncate(v, 80)}")
+    return "\n".join(lines)
+
+
+def _render_list_grouped_by_source(items: list[Any], indent: int) -> str:
+    """带 source 标签的列表按 source 分组渲染（聚合搜索：让候选源可见其来自哪家 provider）。
+
+    保持 source 首次出现顺序；编号跨组连续，便于「第 N 条」全局引用。
+    """
+    pad = "  " * indent
+    groups: dict[Any, list[Any]] = {}
+    order: list[Any] = []
+    for it in items:
+        src = it.get("source")
+        if src not in groups:
+            groups[src] = []
+            order.append(src)
+        groups[src].append(it)
+    lines: list[str] = []
+    idx = 0
+    for src in order:
+        grp = groups[src]
+        lines.append(f"{pad}**{src}** ({len(grp)}):")
+        for it in grp:
+            idx += 1
+            lines.append(_render_list_item(it, idx, indent + 1, skip_keys=("source",)))
+        lines.append("")  # 组间空行
+    return "\n".join(lines).rstrip()
 
 
 def _render_list_markdown(data: dict[str, Any], list_key: str, indent: int) -> str:

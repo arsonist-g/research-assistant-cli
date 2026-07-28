@@ -147,7 +147,7 @@ These tools are cheap and independent. Fire many in parallel; do not serialize.
 Reserve serial work for genuine dependencies (you need URL X's content to formulate the next
 query). Otherwise, fan out.
 
-## Commands (JSON on stdout by default; `--output markdown` for readable markdown)
+## Commands (markdown on stdout by default; `--output json` for parseable structured output)
 
 Pick a tool by what the task needs. Each command's comment states its strength and when to
 use it. Async endpoints (crawl, extract, research, agent) block until done or `--poll-timeout`,
@@ -274,8 +274,8 @@ is not.
 
 ## Output and errors
 
-Output defaults to JSON on stdout (parseable). Pass `--output markdown` for human or AI
-readable markdown. Errors always surface as
+Output defaults to markdown on stdout (human/AI friendly, token-light). Pass `--output json`
+for parseable structured output (scripts/jq). Errors always surface as
 `{"error":{"code","message","provider?","details?"}}` on stdout, plus a one-line
 `error: ...` on stderr, with exit codes:
 `0` ok, `1` internal, `2` args, `3` config, `4` network, `5` antibot.

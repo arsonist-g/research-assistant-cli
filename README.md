@@ -34,7 +34,7 @@ for large investigations that keeps the host context clean.
   from a web-enabled LLM; `locate` pins which sections of a 10k-line file matter before you read.
 - **Plugin providers** — adding a provider is one module plus one config entry; the registry
   auto-discovers it and it appears in `--help`. No router or CLI changes.
-- **Scriptable** — JSON on stdout by default (`--output markdown` for humans); semantic exit
+- **Scriptable** — markdown on stdout by default (human/AI friendly, token-light); `--output json` for scripts and jq; semantic exit
   codes (`0` ok · `1` internal · `2` args · `3` config · `4` network · `5` antibot). Installs as
   a skill into Claude Code, Codex, and friends.
 
@@ -113,8 +113,8 @@ are keyless, so `search` and `fetch` work with an empty config.
 
 Each command is a thin async wrapper over a provider plugin. `search` fans out across providers
 and merges; `fetch` tries the cheap API then escalates to a real browser with Cloudflare bypass;
-`locate` chunks a document and scores chunks with a small model. Output is JSON by default so the
-host agent can parse it, with a markdown mode for humans.
+`locate` chunks a document and scores chunks with a small model. Output is markdown by default
+for readability; pass `--output json` for parseable structured output.
 
 For large investigations, dispatch the `researcher` sub-agent: it runs the full
 search → fetch → locate workflow in isolation, writes a report to disk, and returns only a
