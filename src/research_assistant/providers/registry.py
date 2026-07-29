@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from .base import Provider
+
+# 保留 @register 子类的精确类型：否则装饰器会把子类降级成基类 Provider，
+# 类型检查器访问子类方法（如 Context7Provider.library）会误报未知属性。
+_ProviderT = TypeVar("_ProviderT", bound="Provider")
 
 _REGISTRY: dict[str, type["Provider"]] = {}
 # command/alias → type（多对一）
@@ -24,7 +28,7 @@ _COMMAND_INDEX: dict[str, str] = {}
 _discovered: bool = False
 
 
-def register(cls: type["Provider"]) -> type["Provider"]:
+def register(cls: _ProviderT) -> _ProviderT:
     """类装饰器：把 Provider 子类按 type 登记，并建立 command/alias 索引。"""
     if not cls.type:
         raise ValueError(f"{cls.__name__} 缺少 type 属性")

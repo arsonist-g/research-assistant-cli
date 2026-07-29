@@ -76,5 +76,6 @@ PROVIDER_META: dict[str, ProviderMeta] = {
         needs_model=False,
         default_base="https://context7.com",
         api_key="required",
+        notes="base_url: direct https://context7.com (auto-appends /api/v2) or a gateway context7 root (e.g. https://<gateway>/context7); no manual /api/v2 needed.",
     ),
 }

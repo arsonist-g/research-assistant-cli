@@ -1,12 +1,19 @@
 """Context7 provider（自写 HTTP，ADR-0010；Context7 无 Python SDK 本就需自写）。
 
-公共 REST API（实测确认，context7.com）：
-    GET https://context7.com/api/v1/search?libraryName=<name>&query=<question>
+公共 REST API v2（官方 api-guide.mdx / openapi.json，context7.com）：
+    GET {base}/libs/search?libraryName=<name>&query=<question>
         鉴权 Authorization: Bearer <key>
-        resp: {results[]{id"/org/repo", title, description, totalSnippets, trustScore, ...}}
-    GET https://context7.com/api/v1/<libraryId>?topic=<query>&tokens=<n>&format=markdown
-        注：libraryId 在路径里（catch-all 路由），需去掉前导 /
-        resp: text/markdown，块间以 '--------------------------------' 分隔，每块含 'Source: <url>'
+        resp: {results[]{id"/org/repo", title, description, totalSnippets, ...}}
+    GET {base}/context?libraryId=<id>&query=<q>&type=json&tokens=<n>
+        resp: {codeSnippets[]{codeTitle, codeId, codeList[]{code}, pageTitle, ...},
+               infoSnippets[]{pageId, breadcrumb, content, contentTokens}}
+        libraryId 迁移时 301 + JSON {redirectUrl: "/new/id"}（httpx follow_redirects 自动跟随）
+
+base_url 归一化（_resolve_base）—— 直连和走网关都无需手动补版本前缀，避免网关上游
+（已含 /api/v2）把 /api/v1 当 endpoint 双重拼接成 404：
+    直连裸域名 https://context7.com            → 自动补 /api/v2
+    网关根 https://<gateway>/context7          → 原样，只拼相对路径
+    显式带版本前缀 .../api/v2                  → 原样
 
 对齐 api-contract.md §2.1/§3：
     ctx7 library → {results[]{id, name, description}}
@@ -15,19 +22,36 @@
 
 from __future__ import annotations
 
-import httpx
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from ..config import ProviderConfig
-from ..errors import ArgsError, ProviderError
+from ..errors import ArgsError
 from .. import http as http_mod
 from ..proxy import resolve_proxy
 from .base import ArgSpec, Capability, Provider
 from .registry import register
 
 DEFAULT_BASE_URL = "https://context7.com"
-_SEPARATOR = re.compile(r"\n-{10,}\n")
+_API_VERSION = "api/v2"
+
+
+def _resolve_base(base_url: str) -> str:
+    """归一化 context7 base_url，返回拼相对路径（/libs/search、/context）用的根。
+
+    - 已显式带 /api/vN → 原样（支持显式填 https://context7.com/api/v2）
+    - 指向 context7.com 但无版本前缀（直连裸域名）→ 自动补 /api/v2
+    - 其他（网关根，host ≠ context7.com）→ 原样，只拼相对路径（网关上游自带 /api/v2）
+    """
+    base = base_url.strip().rstrip("/")
+    if not base:
+        return f"https://context7.com/{_API_VERSION}"
+    if re.search(r"/api/v\d+$", base):
+        return base
+    if urlparse(base).netloc == "context7.com":
+        return f"{base}/{_API_VERSION}"
+    return base
 
 
 @register
@@ -66,22 +90,21 @@ class Context7Provider(Provider):
             raise ArgsError("context7: 缺少 api_key", provider="context7")
         if not cfg.base_url:
             cfg.base_url = DEFAULT_BASE_URL
+        # 归一化：直连裸域名自动补 /api/v2，网关根原样，避免上游路径前缀重复
+        cfg.base_url = _resolve_base(cfg.base_url)
         return cfg
 
     async def library(self, args: Any) -> dict[str, Any]:
         cfg = self._cfg()
         params: dict[str, str] = {"libraryName": args.name}
-        if args.query:
-            params["query"] = args.query
-        else:
-            params["query"] = args.name
+        params["query"] = args.query or args.name
         async with http_mod.make_client(
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             headers={"Authorization": f"Bearer {cfg.api_key}"},
         ) as client:
             data = await http_mod.request_json(
-                client, "GET", f"{cfg.base_url}/api/v1/search", provider="context7", params=params
+                client, "GET", f"{cfg.base_url}/libs/search", provider="context7", params=params
             )
         results = []
         for r in data.get("results", []) or []:
@@ -101,71 +124,53 @@ class Context7Provider(Provider):
             raise ArgsError(
                 "context7 docs: libraryId 必须以 '/' 开头（如 /facebook/react）", provider="context7"
             )
-        params = {"topic": args.query, "tokens": str(args.tokens), "format": "markdown"}
+        params = {"libraryId": lib_id, "query": args.query, "type": "json", "tokens": str(args.tokens)}
         async with http_mod.make_client(
             proxy_url=resolve_proxy(self.config.proxy.url),
             timeout=cfg.timeout,
             headers={"Authorization": f"Bearer {cfg.api_key}"},
         ) as client:
-            text, final_id = await _fetch_docs(client, cfg.base_url, lib_id, params)
-        contents = _parse_docs_text(text)
-        return {"id": final_id, "contents": contents}
+            data = await http_mod.request_json(
+                client, "GET", f"{cfg.base_url}/context", provider="context7", params=params
+            )
+        contents = _parse_docs_json(data)
+        return {"id": lib_id, "contents": contents}
 
 
-async def _fetch_docs(
-    client: httpx.AsyncClient, base_url: str, lib_id: str, params: dict[str, str], _depth: int = 0
-) -> tuple[str, str]:
-    """取 docs 文本；Context7 对旧 id 会 404 重定向，自动跟随（最多 3 次）。"""
-    if _depth > 3:
-        raise ProviderError("context7: libraryId 重定向次数过多", provider="context7")
-    path_id = lib_id.lstrip("/")
-    try:
-        resp = await client.request("GET", f"{base_url}/api/v1/{path_id}", params=params)
-    except Exception as e:
-        from ..errors import wrap_provider_http_error
+def _parse_docs_json(data: Any) -> list[dict[str, Any]]:
+    """把 Context7 v2 context 响应拆成 contents[]{text, source_url?}。
 
-        raise wrap_provider_http_error("context7", e) from e
-    if resp.status_code == 404:
-        # 解析重定向提示："Library X has been redirected to this library: /new/id."
-        import re
-
-        m = re.search(r"redirected to this library:\s*(/[^\s.]+)", resp.text)
-        if m:
-            new_id = m.group(1)
-            return await _fetch_docs(client, base_url, new_id, params, _depth + 1)
-    if resp.status_code >= 400:
-        raise http_mod.handle_http_error(
-            "context7",
-            httpx.HTTPStatusError(f"context7 HTTP {resp.status_code}", request=resp.request, response=resp),
-        )
-    return resp.text, lib_id
-
-
-def _parse_docs_text(text: str) -> list[dict[str, Any]]:
-    """把 Context7 markdown 文本拆成 contents[]{text, source_url?}。
-
-    块间以一行短横线分隔；每块若含 'Source: <url>' 行，抽出为 source_url。
+    codeSnippets：codeTitle + 各 codeList[].code 拼成 text；codeId 作 source_url。
+    infoSnippets：content 作 text；pageId 作 source_url。
     """
-    if not text or not text.strip():
+    if not isinstance(data, dict):
         return []
-    blocks = _SEPARATOR.split(text)
     out: list[dict[str, Any]] = []
-    for block in blocks:
-        block = block.strip()
-        if not block:
+    for snip in data.get("codeSnippets", []) or []:
+        if not isinstance(snip, dict):
             continue
-        source_url = None
-        lines = block.splitlines()
-        # 找 Source: 行
-        clean_lines: list[str] = []
-        for line in lines:
-            m = re.match(r"\s*Source:\s*(\S+)", line)
-            if m and source_url is None:
-                source_url = m.group(1)
-                continue  # 去掉 Source 行本身
-            clean_lines.append(line)
-        item: dict[str, Any] = {"text": "\n".join(clean_lines).strip()}
-        if source_url:
-            item["source_url"] = source_url
+        parts: list[str] = []
+        title = snip.get("codeTitle")
+        if title:
+            parts.append(str(title))
+        for ex in snip.get("codeList", []) or []:
+            if isinstance(ex, dict) and ex.get("code"):
+                parts.append(str(ex["code"]))
+        text = "\n".join(parts).strip()
+        if not text:
+            continue
+        item: dict[str, Any] = {"text": text}
+        if snip.get("codeId"):
+            item["source_url"] = str(snip["codeId"])
+        out.append(item)
+    for snip in data.get("infoSnippets", []) or []:
+        if not isinstance(snip, dict):
+            continue
+        text = str(snip.get("content") or "").strip()
+        if not text:
+            continue
+        item = {"text": text}
+        if snip.get("pageId"):
+            item["source_url"] = str(snip["pageId"])
         out.append(item)
     return out
