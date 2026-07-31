@@ -72,11 +72,31 @@ def _channel_executable(channel: str) -> str | None:
     return None
 
 
-def browser_probe(channel: str) -> str:
-    exe = _channel_executable(channel)
+def _resolve_executable(config: Config) -> tuple[str | None, str]:
+    """返回 (可执行路径或 None, 来源描述)。
+
+    executable_path 配置且文件存在 → 用它（覆盖 channel 探测，支持非标准安装位置）；
+    否则按 channel 探测标准安装路径。来源描述用于 doctor/browser_probe 的诊断信息。
+    """
+    configured = config.browser.executable_path
+    if configured:
+        src = f"executable_path={configured}"
+        return (configured if os.path.exists(configured) else None), src
+    return _channel_executable(config.browser.channel), f"channel={config.browser.channel}"
+
+
+def browser_probe(config: Config) -> tuple[bool, str]:
+    """探测浏览器可执行就绪性（doctor 用）。返回 (是否可用, 诊断信息)。
+
+    返回 bool 而非让调用方靠「"可用" in 文案」判断——诊断文案里"不可用"含"可用"子串，
+    子串匹配会把不可用误判成可用。
+    """
+    exe, src = _resolve_executable(config)
     if exe:
-        return f"channel={channel} 可用"
-    return f"channel={channel} 未找到本地浏览器可执行（fetch 回退将不可用）"
+        return True, f"{src} 可用"
+    if config.browser.executable_path:
+        return False, f"{src} 路径不存在（fetch 回退将不可用）"
+    return False, f"{src} 未找到本地浏览器可执行（fetch 回退将不可用）"
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +317,7 @@ def _build_dp_options(config: Config, profile_dir: Path, *, headless: bool = Fal
     """
     from DrissionPage import ChromiumOptions
 
-    exe = _channel_executable(config.browser.channel)
+    exe, _ = _resolve_executable(config)
     co = ChromiumOptions()
     co.set_browser_path(exe)
     co.set_user_data_path(str(profile_dir))
@@ -305,6 +325,11 @@ def _build_dp_options(config: Config, profile_dir: Path, *, headless: bool = Fal
     co.auto_port(True)
     w, h = cfbypass.REAL_VIEWPORT["width"], cfbypass.REAL_VIEWPORT["height"]
     co.set_argument(f"--window-size={w},{h}")
+    # 启动即挪到屏外（与启动后 _hide_window 双保险）：消除 ChromiumPage 构造到 hide 之间的主窗口闪现。
+    co.set_argument("--window-position=-32000,-32000")
+    # 设 UI 语言为英语：隔离 profile 抓的多是英文页（CF 挑战页等），Edge 见"页面语言=用户语言"就不弹翻译框。
+    # 比 --disable-features=Translate 更可靠——后者实测仍弹（Edge 翻译弹窗不完全受 Chromium Translate feature 控制）。
+    co.set_argument("--lang=en-US")
     # 翻译弹窗根治：DrissionPage 默认带 --disable-features=PrivacySandboxSettings4，与 Translate
     # 冲突（Chrome 只认最后一个 --disable-features），先移除默认再设合并值，一次杀翻译+隐私沙盒+Edge 欢迎页。
     co.remove_argument("--disable-features=PrivacySandboxSettings4")
@@ -530,9 +555,10 @@ async def _fetch_with_stealth(
     config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown"
 ) -> str | None:
     """单 url 薄包装（建 browser+tab0 调 _fetch_one_tab）。供 test_cf_live 与单 url 用。"""
-    if _channel_executable(config.browser.channel) is None:
+    exe, src = _resolve_executable(config)
+    if exe is None:
         raise ResearchAssistantError(
-            f"未找到本地浏览器 ({config.browser.channel})，浏览器抓取不可用"
+            f"未找到本地浏览器 ({src})，浏览器抓取不可用"
         )
     return await asyncio.to_thread(_fetch_single_sync, config, url, cookies, fmt)
 

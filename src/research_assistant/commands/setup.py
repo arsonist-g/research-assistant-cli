@@ -4,7 +4,7 @@
 非交互式：
     --config-inline "<toml>"              直接写整份 TOML
     --provider type[,k=v,k=v]...          重复添加/更新 provider
-    --proxy <url> --browser-channel <c> --daemon-port <n>
+    --proxy <url> --browser-channel <c> --browser-executable <path> --daemon-port <n>
 幂等：重复 setup 合并更新配置；重复 install 覆盖 managed 文件。
 """
 
@@ -44,6 +44,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--proxy", help="Proxy URL (empty=auto-detect; 'none' to clear).")
     p.add_argument("--browser-channel", choices=["msedge", "chrome"], help="Browser channel for fetch fallback.")
+    p.add_argument("--browser-executable", help="Browser executable path (overrides channel auto-detect for non-standard install locations).")
     p.add_argument("--daemon-port", type=int, help="Cookie daemon port.")
     p.add_argument("--install-skills", help="Comma list of families to install (claude,codex,cursor,hermes,all).")
     p.add_argument("--skills-root", help="Override install root (default $HOME).")
@@ -120,6 +121,8 @@ def _config_from_flags(args: argparse.Namespace, current: Config) -> Config:
         cfg.proxy.url = "" if args.proxy.lower() in ("none", "") else args.proxy
     if args.browser_channel:
         cfg.browser.channel = args.browser_channel
+    if args.browser_executable is not None:
+        cfg.browser.executable_path = args.browser_executable
     if args.daemon_port:
         cfg.browser.daemon_port = args.daemon_port
     return cfg
@@ -200,6 +203,10 @@ def _interactive(current: Config) -> Config:
     ch = input(f"浏览器 channel (msedge|chrome) [{cur_ch}]: ").strip().lower()
     if ch in ("msedge", "chrome"):
         cfg.browser.channel = ch
+    cur_exe = cfg.browser.executable_path
+    exe = input(f"浏览器可执行路径 (空=按 channel 探测) [{cur_exe or '自动'}]: ").strip()
+    if exe:
+        cfg.browser.executable_path = exe
     cur_port = cfg.browser.daemon_port
     port = input(f"cookie daemon 端口 [{cur_port}]: ").strip()
     if port.isdigit():

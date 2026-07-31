@@ -5,7 +5,7 @@ schema 见 backend-design data-model.md §2.1：
     [[provider]]     # N 个，按 type 区分
     type / base_url / api_key / model / timeout / concurrency(仅 locate)
     [proxy]          url（空=自动检测，显式=覆盖，ADR-0007）
-    [browser]        channel / extension_status / daemon_port / profile_strategy
+    [browser]        channel / executable_path / extension_status / daemon_port / profile_strategy
 
 读写：tomllib 读（3.11+ 内置，3.10 回退 tomli）；tomli_w 写（setup 持久化）。
 Key 同时支持环境变量覆盖（RA_<TYPE>_API_KEY 等），env 优先于 config 文件。
@@ -117,6 +117,7 @@ class ProxyConfig:
 @dataclass
 class BrowserConfig:
     channel: str = "msedge"  # msedge | chrome
+    executable_path: str = ""  # 浏览器可执行路径；空=按 channel 自动探测标准安装路径
     extension_status: str = "missing"  # installed | missing
     daemon_port: int = 17890  # cookie daemon HTTP 端口（WS 同端口，ADR-0006）
     profile_strategy: str = "per_call_temp"  # ADR-0005
@@ -206,6 +207,7 @@ def load(path: str | os.PathLike[str] | None = None) -> Config:
         )
         cfg.browser = BrowserConfig(
             channel=str(browser_raw.get("channel", "msedge")),
+            executable_path=str(browser_raw.get("executable_path", "")),
             extension_status=str(browser_raw.get("extension_status", "missing")),
             daemon_port=int(browser_raw.get("daemon_port", 17890)),
             profile_strategy=str(browser_raw.get("profile_strategy", "per_call_temp")),
@@ -235,6 +237,7 @@ def save(cfg: Config, path: str | os.PathLike[str] | None = None) -> Path:
         "proxy": {"url": cfg.proxy.url},
         "browser": {
             "channel": cfg.browser.channel,
+            "executable_path": cfg.browser.executable_path,
             "extension_status": cfg.browser.extension_status,
             "daemon_port": cfg.browser.daemon_port,
             "profile_strategy": cfg.browser.profile_strategy,

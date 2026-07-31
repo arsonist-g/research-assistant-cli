@@ -224,9 +224,9 @@ research-assistant locate <md_path> "<query>" [--top N] [--scope lines|paragraph
 ### Setup and management
 
 ```sh
-research-assistant setup [--non-interactive | --config-inline TOML] [--provider TYPE[,k=v,...]] ... [--proxy URL] [--browser-channel msedge|chrome] [--daemon-port N] [--install-skills claude,codex,...]   # configure providers/proxy/browser; --install-skills writes the skill+agent files
+research-assistant setup [--non-interactive | --config-inline TOML] [--provider TYPE[,k=v,...]] ... [--proxy URL] [--browser-channel msedge|chrome] [--browser-executable PATH] [--daemon-port N] [--install-skills claude,codex,...]   # configure providers/proxy/browser; --browser-executable overrides channel auto-detect (non-standard install locations); --install-skills writes the skill+agent files
 research-assistant config fields                                         # each provider's config fields (api_key/model required, default base_url, keyless tier, notes); read-only
-research-assistant doctor [--show-config] [--target <name>]              # connectivity diagnostics; --show-config prints config (masked), --target checks one provider or builtin
+research-assistant doctor [--show-config] [--target <name>]              # connectivity diagnostics; also lists per-command availability (ask/locate/search/fetch + provider commands) with missing dependencies — read it before calling a command so you don't hit a late ArgsError; --show-config prints config (masked), --target checks one provider or builtin
 research-assistant skills status [--targets claude,codex,...] [--skills-root PATH]   # managed skill/agent freshness
 research-assistant skills update [--targets claude,codex,...] [--skills-root PATH]   # refresh managed files
 ```

@@ -48,7 +48,11 @@ async def run(args: argparse.Namespace, config: Config) -> dict[str, Any]:
         checks.append(await _check(target, config))
 
     config_complete = _config_complete(config)
-    result: dict[str, Any] = {"checks": checks, "config_complete": config_complete}
+    result: dict[str, Any] = {
+        "checks": checks,
+        "config_complete": config_complete,
+        "commands": _commands_status(config),
+    }
     if args.show_config:
         result["config"] = _masked_config(config)
     return result
@@ -65,6 +69,64 @@ def _config_complete(config: Config) -> bool:
     lc = config.provider("locate")
     has_locate = bool(lc and lc.api_key and lc.base_url and lc.model)
     return has_llm or has_locate
+
+
+# 命令 → 依赖 provider（单依赖命令；search/fetch 在 _commands_status 内特殊处理）。
+# 这是 doctor 让 AI「跑完就知道哪些命令可用」的关键：未配置依赖的命令标 available=false + missing，
+# AI 不必等调用时才在 provider 层撞到 ArgsError（典型场景：没配 openai_compat 却去用 ask）。
+_SINGLE_DEP_COMMANDS: list[tuple[str, str]] = [
+    ("ask", "openai_compat"),
+    ("locate", "locate"),
+    ("ctx7", "context7"),
+    ("exa", "exa"),
+    ("tavily", "tavily"),
+    ("openai", "openai_compat"),
+]
+
+
+def _provider_ready(config: Config, ptype: str) -> bool:
+    """provider 是否配置齐全可用。
+
+    firecrawl 免 key 层永远可用；其余需 api_key（openai_compat/locate 这类 LLM 还需 model）。
+    base_url 允许留空（OpenAI 兼容类有默认值，resolve_cfg 兜底）。
+    """
+    p = config.provider(ptype)
+    if p is None:
+        return False
+    if ptype == "firecrawl":
+        return True
+    if not p.api_key:
+        return False
+    if ptype in ("openai_compat", "locate") and not p.model:
+        return False
+    return True
+
+
+def _commands_status(config: Config) -> list[dict[str, Any]]:
+    """各命令的可用性 + 缺失依赖，供 AI 在 doctor 阶段就判断能否调用某命令。"""
+    out: list[dict[str, Any]] = []
+    for name, dep in _SINGLE_DEP_COMMANDS:
+        ready = _provider_ready(config, dep)
+        item: dict[str, Any] = {"name": name, "available": ready, "requires": dep}
+        if not ready:
+            need = "api_key + model" if dep in ("openai_compat", "locate") else "api_key"
+            item["missing"] = f"{dep} 未配置或不完整（需 {need}）"
+        out.append(item)
+    # search：任一搜索源可用；firecrawl 免 key 兜底 → 始终基本可用
+    api_sources = [s for s in ("exa", "tavily", "context7") if _provider_ready(config, s)]
+    sitem: dict[str, Any] = {"name": "search", "available": True, "requires": "exa|tavily|context7|firecrawl"}
+    if not api_sources:
+        sitem["note"] = "仅 firecrawl 免 key 层可用；配置 exa/tavily/context7 可增强搜索质量"
+    out.append(sitem)
+    # fetch：普通接口（firecrawl 兜底）总能试，浏览器回退看 channel 可执行是否存在
+    from ..fetch import browser_probe
+
+    fetch_ok, fetch_msg = browser_probe(config)
+    fitem: dict[str, Any] = {"name": "fetch", "available": fetch_ok, "requires": "browser(普通接口失败时回退)"}
+    if not fetch_ok:
+        fitem["missing"] = fetch_msg
+    out.append(fitem)
+    return out
 
 
 async def _check(target: str, config: Config) -> dict[str, Any]:
@@ -169,10 +231,9 @@ async def _check_browser(config: Config) -> tuple[bool, str]:
     # 浏览器可启动性（仅探测 channel 可执行是否存在，不真启动以省时）
     from ..fetch import browser_probe
 
-    browser_msg = browser_probe(config.browser.channel)
-    ok = "可用" in browser_msg
+    browser_ok, browser_msg = browser_probe(config)
     msg = f"browser={browser_msg}; daemon={daemon_msg}"
-    return ok, msg
+    return browser_ok, msg
 
 
 async def _check_daemon(config: Config) -> str:
@@ -208,6 +269,7 @@ def _masked_config(config: Config) -> dict[str, Any]:
         "proxy": {"url": config.proxy.url or "(空=自动检测)"},
         "browser": {
             "channel": config.browser.channel,
+            "executable_path": config.browser.executable_path or "(空=按 channel 探测)",
             "extension_status": config.browser.extension_status,
             "daemon_port": config.browser.daemon_port,
             "profile_strategy": config.browser.profile_strategy,

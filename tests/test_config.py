@@ -159,6 +159,26 @@ class TestBrowserInstances:
         assert config.load().browser.max_browser_instances == 6
 
 
+class TestExecutablePath:
+    """executable_path：默认空（按 channel 探测），config 文件可配，load/save 回环。"""
+
+    def test_default_empty(self, home):
+        assert config.load().browser.executable_path == ""
+
+    def test_loads_from_config(self, home):
+        (home / "config.toml").write_text(
+            '[browser]\nexecutable_path = "C:/custom/msedge.exe"\n', encoding="utf-8"
+        )
+        assert config.load().browser.executable_path == "C:/custom/msedge.exe"
+
+    def test_roundtrip_preserves(self, home):
+        from research_assistant.config import BrowserConfig
+
+        cfg = Config(browser=BrowserConfig(executable_path="/usr/local/bin/chrome"))
+        config.save(cfg)
+        assert config.load().browser.executable_path == "/usr/local/bin/chrome"
+
+
 class TestMaskSecret:
     def test_empty(self):
         assert config.mask_secret("") == ""

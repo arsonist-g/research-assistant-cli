@@ -71,19 +71,8 @@ def _markdown_render(data: Any, indent: int = 0) -> str:
             if err.get("provider"):
                 line += f" (provider: {err['provider']})"
             return line
-        # 结果列表（results / data / anchors 等）：先出元数据，再以列表渲染主体
-        for list_key in ("results", "data", "anchors", "contents", "checks", "targets"):
-            if list_key in data and isinstance(data[list_key], list):
-                return _render_list_markdown(data, list_key, indent)
-        # 普通 dict：每项一行 `- key: value`
-        lines: list[str] = []
-        for k, v in data.items():
-            if isinstance(v, (dict, list)) and v:
-                lines.append(f"{pad}- {k}:")
-                lines.append(_markdown_render(v, indent + 1))
-            else:
-                lines.append(f"{pad}- {k}: {_truncate(v, 200)}")
-        return "\n".join(lines)
+        # dict 统一走 _render_dict_markdown（支持多个列表主体字段，如 doctor 的 checks+commands）
+        return _render_dict_markdown(data, indent)
     if isinstance(data, list):
         if not data:
             return f"{pad}(空)"
@@ -174,19 +163,37 @@ def _render_list_grouped_by_source(items: list[Any], indent: int) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _render_list_markdown(data: dict[str, Any], list_key: str, indent: int) -> str:
+# dict 渲染时作为「列表主体」单独成段输出的字段（可多个，各自一段）。
+# 其余 list/dict 字段按普通子项递归。doctor 用 checks + commands 两段同出。
+_LIST_KEYS: tuple[str, ...] = ("results", "data", "anchors", "contents", "checks", "targets", "commands")
+
+
+def _render_dict_markdown(data: dict[str, Any], indent: int) -> str:
+    """渲染 dict：先标量元数据，再各列表主体字段（固定顺序，各自一段），最后其他非标量字段。
+
+    取代「找到首个 list_key 就只渲染它」的旧逻辑——doctor 的 checks 与 commands 都是列表，
+    旧逻辑会吞掉第二个。现在多个 _LIST_KEYS 字段各自成段输出。
+    """
     pad = "  " * indent
     lines: list[str] = []
-    # 先渲染标量元数据字段
+    # 标量元数据（每项一行）
     for k, v in data.items():
-        if k == list_key:
-            continue
         if isinstance(v, (dict, list)):
             continue
-        lines.append(f"{pad}- {k}: {_truncate(v, 160)}")
-    items = data[list_key]
-    if lines:
-        lines.append("")
-    lines.append(f"{pad}{list_key} ({len(items)}):")
-    lines.append(_markdown_render(items, indent + 1))
+        lines.append(f"{pad}- {k}: {_truncate(v, 200)}")
+    # 列表主体字段（固定顺序，每个一段）
+    for lk in _LIST_KEYS:
+        items = data.get(lk)
+        if isinstance(items, list):
+            if lines:
+                lines.append("")
+            lines.append(f"{pad}{lk} ({len(items)}):")
+            lines.append(_markdown_render(items, indent + 1))
+    # 其他非标量字段（dict/list，非列表主体）递归
+    for k, v in data.items():
+        if k in _LIST_KEYS:
+            continue
+        if isinstance(v, (dict, list)) and v:
+            lines.append(f"{pad}- {k}:")
+            lines.append(_markdown_render(v, indent + 1))
     return "\n".join(lines)
