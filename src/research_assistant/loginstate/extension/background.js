@@ -1,167 +1,182 @@
-// Research Assistant Bridge — background service worker (MV3)
-// 架构(搬自 cdt)：扩展主动连本地 daemon 保持持久长连接，被动响应 daemon 的 getCookies/ping。
-// 保活：daemon 25s ping → onmessage 重置 30s 不活动计时器；chrome.alarms 30s 兜底重连。
-// 去噪：重连指数退避(1→60s 封顶)，只在状态变化时记日志。
-// 端口：从 chrome.storage.local 读 ra_port（默认 17890），可在 popup 改。
-
+// Research Assistant Bridge 桥扩展 service worker（移植自 Browser-Use Bridge，适配本仓库 daemon 契约）
+// 职责单一：连 daemon（ws://127.0.0.1:<port>/ws，端口读 chrome.storage ra_port，默认 17890）
+//   → 响应 getCookies（chrome.cookies.getAll 全量含 httpOnly）
+// 自愈：WS onclose 指数退避重连 + /status 探测区分「daemon 离线 / 在线未连」+ chrome.alarms 兜底
+// 图标即状态：深色底 + 品牌字 + 右下状态圆点（绿=已连/黄=等待/红=离线），绘制全防御
 const DEFAULT_PORT = 17890;
-const ALARM = "ra-keepalive";
-const MAX_LOGS = 30;
-
-const state = {
-  status: "disconnected", // disconnected|connecting|connected
-  port: DEFAULT_PORT,
-  cookieCount: 0,
-  served: 0,
-  lastEvent: null,
-  logs: [],
+const STATE_COLORS = { connected: "#2fbf71", link: "#e0a52e", off: "#ef5a5f" };
+const STATE_TITLES = {
+  connected: "Research Assistant Bridge: 已连接 daemon · cookie 通道就绪",
+  link: "Research Assistant Bridge: daemon 在线，等待连接（自动重连中）",
+  off: "Research Assistant Bridge: daemon 离线 — research-assistant fetch 会自动拉起",
 };
 
-let wsRef = null;
-let backoff = 1000; // 重连退避 ms
-
-function wsUrl() {
-  return `ws://127.0.0.1:${state.port}/ws`;
-}
-
-function persist() {
-  try {
-    chrome.storage.session.set({ state }).catch(() => {});
-  } catch {}
-}
-
-function log(text) {
-  const time = new Date().toLocaleTimeString();
-  state.logs.push(`${time} ${text}`);
-  if (state.logs.length > MAX_LOGS) state.logs.shift();
-  state.lastEvent = { time, text };
-  console.log("[ra-bridge]", text);
-  persist();
-}
-
-function setStatus(s) {
-  if (state.status !== s) {
-    state.status = s;
-    log("状态 → " + s);
-  }
-  persist();
-}
+let ws = null;
+let backoffMs = 1000;
+let currentPort = DEFAULT_PORT;
 
 async function loadPort() {
   try {
     const v = await chrome.storage.local.get("ra_port");
-    state.port = Number(v.ra_port) || DEFAULT_PORT;
-  } catch {
-    state.port = DEFAULT_PORT;
+    currentPort = Number(v.ra_port) || DEFAULT_PORT;
+  } catch (e) {
+    currentPort = DEFAULT_PORT;
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+function setUiState(state, detail) {
+  try {
+    chrome.storage.local.set({ uiState: state, uiDetail: detail ?? "" });
+  } catch (e) { /* */ }
+}
+
+function drawIcon(state) {
+  const dot = STATE_COLORS[state] ?? STATE_COLORS.off;
+  try {
+    const imageData = {};
+    for (const size of [16, 32]) {
+      const canvas = new OffscreenCanvas(size, size);
+      const ctx = canvas.getContext("2d");
+      const s = size / 32;
+      ctx.fillStyle = "#1f2229";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(1 * s, 1 * s, 30 * s, 30 * s, 7 * s);
+      else ctx.rect(1 * s, 1 * s, 30 * s, 30 * s);
+      ctx.fill();
+      ctx.lineWidth = 1.5 * s;
+      ctx.strokeStyle = "#3a4150";
+      ctx.stroke();
+      ctx.fillStyle = "#e8eaee";
+      ctx.font = "bold " + Math.round(19 * s) + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("R", 15 * s, 16 * s);
+      ctx.beginPath();
+      ctx.arc(24 * s, 24 * s, 6.5 * s, 0, Math.PI * 2);
+      ctx.fillStyle = dot;
+      ctx.fill();
+      ctx.lineWidth = 2 * s;
+      ctx.strokeStyle = "#16181d";
+      ctx.stroke();
+      imageData[size] = ctx.getImageData(0, 0, size, size);
+    }
+    chrome.action.setIcon({ imageData });
+    chrome.action.setBadgeText({ text: "" });
+  } catch (e) {
+    try {
+      chrome.action.setBadgeText({ text: state === "connected" ? "" : "!" });
+      chrome.action.setBadgeBackgroundColor({ color: dot });
+    } catch (e2) { /* */ }
+  }
+  try {
+    chrome.action.setTitle({ title: STATE_TITLES[state] ?? STATE_TITLES.off });
+  } catch (e) { /* */ }
+  setUiState(state, STATE_TITLES[state] ?? "");
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify(obj)); } catch (e) { /* */ }
+  }
+}
+
+async function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  await loadPort();
+  let socket;
+  try {
+    socket = new WebSocket("ws://127.0.0.1:" + currentPort + "/ws");
+  } catch (e) {
+    drawIcon("off");
+    scheduleReconnect();
+    return;
+  }
+  ws = socket;
+  socket.onopen = () => {
+    backoffMs = 1000;
+    drawIcon("connected");
+    wsSend({ type: "hello" });
+  };
+  socket.onmessage = async (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === "getCookies") {
+      try {
+        const data = await chrome.cookies.getAll({});
+        // daemon 不要求 reqId；有则原样回带（无 reqId 的键不落 JSON，与 JS 序列化行为一致）
+        const reply = { type: "cookies", data };
+        if (m.reqId !== undefined) reply.reqId = m.reqId;
+        wsSend(reply);
+      } catch (e) {
+        wsSend({ type: "error", reqId: m.reqId, message: String(e) });
+      }
+    } else if (m.type === "ping") {
+      wsSend({ type: "pong" });
+    }
+  };
+  socket.onclose = () => {
+    if (ws === socket) ws = null;
+    // 与 Browser-Use 桥同策略：断开大概率是 daemon 重启/暂离，先按「在线未连」标黄，
+    // 下一轮 /status 探测会把真离线校准成红
+    drawIcon("link");
+    scheduleReconnect();
+  };
+  socket.onerror = () => {};
+}
+
+function scheduleReconnect() {
+  setTimeout(connect, backoffMs);
+  backoffMs = Math.min(backoffMs * 2, 30000);
+}
+
+/** 状态校准：ws 断开时区分「daemon 离线(off)」与「daemon 在线未连(link)」 */
+async function probeDaemon() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  try {
+    const r = await fetch("http://127.0.0.1:" + currentPort + "/status", { cache: "no-store" });
+    if (r.ok) drawIcon("link");
+    else drawIcon("off");
+  } catch (e) {
+    drawIcon("off");
+  }
+  connect();
+}
+
+chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+  if (msg?.type === "reconnect") {
+    if (ws) { try { ws.close(); } catch (e) { /* */ } ws = null; }
+    probeDaemon();
+    sendResponse({ ok: true });
+  }
   if (msg?.type === "getStatus") {
-    sendResponse({ ...state });
-    return false;
+    sendResponse({ connected: !!(ws && ws.readyState === WebSocket.OPEN), port: currentPort });
   }
   if (msg?.type === "setPort") {
     const p = Number(msg.port);
     if (p > 0 && p < 65536) {
-      chrome.storage.local.set({ ra_port: p });
-      state.port = p;
-      log("端口改为 " + p);
-      backoff = 1000;
-      if (wsRef) {
-        try { wsRef.close(); } catch {}
-      } else {
-        connect();
-      }
+      currentPort = p;
+      try { chrome.storage.local.set({ ra_port: p }); } catch (e) { /* */ }
+      if (ws) { try { ws.close(); } catch (e) { /* */ } ws = null; }
+      backoffMs = 1000;
+      probeDaemon(); // connect() 会用新端口
       sendResponse({ ok: true, port: p });
     } else {
       sendResponse({ ok: false });
     }
-    return false;
-  }
-  if (msg?.type === "reset") {
-    backoff = 1000;
-    log("手动重连");
-    if (!wsRef) connect();
-    sendResponse({ ok: true });
-    return false;
   }
   return false;
 });
 
-function connect() {
-  if (wsRef) return;
-  setStatus("connecting");
-  let ws;
-  try {
-    ws = new WebSocket(wsUrl());
-    wsRef = ws;
-  } catch (e) {
-    log("WebSocket 构造失败: " + (e?.message || e));
-    scheduleReconnect();
-    return;
-  }
-
-  ws.onopen = () => {
-    backoff = 1000;
-    setStatus("connected");
-    ws.send(JSON.stringify({ type: "hello" }));
-  };
-
-  ws.onmessage = async (event) => {
-    let m;
-    try {
-      m = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (m.type === "ping") {
-      ws.send(JSON.stringify({ type: "pong" }));
-      return;
-    }
-    if (m.type === "getCookies") {
-      try {
-        const cookies = await chrome.cookies.getAll({});
-        state.cookieCount = cookies.length;
-        state.served += 1;
-        persist();
-        ws.send(JSON.stringify({ type: "cookies", count: cookies.length, data: cookies }));
-        log(`响应 getCookies #${state.served}: ${cookies.length} cookie`);
-      } catch (e) {
-        ws.send(JSON.stringify({ type: "error", message: String(e) }));
-        log("读 cookie 报错: " + (e?.message || e));
-      }
-    }
-  };
-
-  ws.onerror = () => {};
-
-  ws.onclose = () => {
-    if (wsRef === ws) wsRef = null;
-    setStatus("disconnected");
-    scheduleReconnect();
-  };
-}
-
-function scheduleReconnect() {
-  if (wsRef) return;
-  const wait = backoff;
-  backoff = Math.min(backoff * 2, 60000);
-  if (wait <= 2000) log(`${wait}ms 后重连…`);
-  setTimeout(connect, wait);
-}
-
-chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name !== ALARM) return;
-  if (!wsRef || wsRef.readyState !== WebSocket.OPEN) {
-    if (!wsRef) connect();
-  }
-});
-
-chrome.alarms.create(ALARM, { periodInMinutes: 0.5 });
+try {
+  chrome.alarms.onAlarm.addListener(() => probeDaemon());
+  chrome.alarms.create("reconnect", { periodInMinutes: 1 });
+} catch (e) { /* */ }
 
 (async () => {
   await loadPort();
-  log("Research Assistant Bridge 启动 (端口 " + state.port + ")");
+  drawIcon("off");
   connect();
 })();
+try {
+  setInterval(probeDaemon, 5000);
+} catch (e) { /* */ }

@@ -102,14 +102,17 @@ class CookieDaemon:
                 raise RuntimeError("已有进行中的 cookie 请求")
             loop = asyncio.get_event_loop()
             self._pending = loop.create_future()
-            await self._ext_ws.send_str(json.dumps({"type": "getCookies"}))
             try:
+                await self._ext_ws.send_str(json.dumps({"type": "getCookies"}))
                 return await asyncio.wait_for(self._pending, timeout=timeout)
             except asyncio.TimeoutError:
                 if not self._pending.done():
                     self._pending.set_exception(RuntimeError("扩展响应超时"))
-                self._pending = None
                 raise
+            finally:
+                # 所有退出路径(成功/超时/send 失败)都清占位,否则泄漏会让后续
+                # /cookies 永久报「已有进行中的 cookie 请求」直到 daemon 重启
+                self._pending = None
 
     def build_app(self) -> web.Application:
         app = web.Application()
