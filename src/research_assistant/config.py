@@ -1,10 +1,10 @@
-"""配置存储（TOML，~/.research-assistant/config.toml，D3）。
+"""配置存储（TOML，~/.research-assistant/config.toml，DEC-015）。
 
-schema 见 backend-design data-model.md §2.1：
+schema 见 project-memory/spec/backend-design/research-assistant/data-model.md §2.1：
     schema_version = 1
     [[provider]]     # N 个，按 type 区分
     type / base_url / api_key / model / timeout / concurrency(仅 locate)
-    [proxy]          url（空=自动检测，显式=覆盖，ADR-0007）
+    [proxy]          url（空=自动检测，显式=覆盖，DEC-007）
     [browser]        channel / executable_path / extension_status / daemon_port / profile_strategy
 
 读写：tomllib 读（3.11+ 内置，3.10 回退 tomli）；tomli_w 写（setup 持久化）。

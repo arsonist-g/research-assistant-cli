@@ -1,0 +1,3 @@
+[submodule "project-memory"]
+	path = project-memory
+	url = ssh://git@github-arsonist-g-443/arsonist-g/research-assistant-cli-memory.git

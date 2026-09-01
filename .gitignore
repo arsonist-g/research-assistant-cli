@@ -36,15 +36,8 @@ tmp-doc/
 # 运行日志
 .logs/
 
-# === 任务跟踪（内部进度记录，对话式，不公开） ===
-task-tracker/
-
-# === 设计文档（开发期产物：PM / 架构 / 前后端设计、基线草稿，不公开） ===
-pm-design/
-backend-design/
-system-architecture/
-doc/
-sketch.md
+# === 项目记忆 = git submodule(project-memory → 私有仓库 research-assistant-cli-memory) ===
+# 经 .gitmodules 登记,不走 .gitignore
 
 # === 中文审查版（skill / persona 的大写 -ZH.md，仅供人工审阅，不进仓库/不进包） ===
 # 注意：README-ZH.md 是公开中文 README，要进仓库，所以这里列具体文件而非 *-ZH.md 通配，
