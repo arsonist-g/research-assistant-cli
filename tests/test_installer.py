@@ -51,6 +51,10 @@ class TestGenerateAgentMarkdown:
         # md_fields 里 Claude 带 tools + model
         assert "tools:" in text
         assert "model:" in text
+        # tools 必须授予 Read/Write：persona 契约要求报告写盘、回读落盘长文档
+        tools_line = next(ln for ln in text.splitlines() if ln.startswith("tools:"))
+        assert "Read" in tools_line
+        assert "Write" in tools_line
         # frontmatter 后接 persona 正文
         assert "researcher" in text.split("---", 2)[-1].lower()
 

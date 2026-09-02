@@ -1,6 +1,6 @@
 {
   "name": "research-assistant",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Search/research sub-agent + concurrent search/fetch/locate CLI atomic tools for AI agents (Exa, Tavily, Firecrawl, Context7, OpenAI-compatible).",
   "license": "MIT",
   "homepage": "https://github.com/arsonist-g/research-assistant-cli#readme",
