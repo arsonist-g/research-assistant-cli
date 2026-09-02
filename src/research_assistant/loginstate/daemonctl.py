@@ -64,7 +64,12 @@ def _spawn_daemon(config: Any) -> None:
     with log_file.open("a", encoding="utf-8") as f:
         creationflags = 0
         if sys.platform.startswith("win"):
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            # 必须是 CREATE_NO_WINDOW，不能用 DETACHED_PROCESS：Windows 上 venv 的
+            # python.exe/pythonw.exe 都是 trampoline，re-exec 到 base 解释器时不带
+            # creation flags。DETACHED 时 trampoline 无控制台，base 解释器（console
+            # 子系统）会新建可见控制台窗口；CREATE_NO_WINDOW 时 base 解释器继承
+            # trampoline 的隐藏控制台，保持不可见（与 npm shim 的 windowsHide 同机理）。
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.Popen(
             [sys.executable, "-m", "research_assistant.loginstate.daemon_cli", port],
             stdout=f,
