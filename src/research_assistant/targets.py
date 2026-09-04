@@ -34,7 +34,7 @@ ALL_FAMILIES: dict[str, Family] = {
         agent_relative=".claude/agents/researcher.md",
         agent_format="md",
         agent_support="static",
-        md_fields={"tools": "WebFetch, Bash, Read, Write", "model": "inherit"},
+        md_fields={"tools": "Bash, Read, Write", "model": "haiku"},
     ),
     "cursor": Family(
         name="cursor",
