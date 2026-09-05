@@ -76,9 +76,17 @@ research-assistant setup                       # configure + install skill/agent
 research-assistant config fields               # show each provider's required config fields
 research-assistant doctor [--show-config]      # connectivity diagnostics
 research-assistant skills status               # managed skill/agent freshness
+research-assistant permissions install         # allowlist this CLI in agent platforms (skip approval prompts)
+research-assistant permissions status          # per-platform allow-rule state
 ```
 
 Run `research-assistant --help` for the full list; every command also takes `-h`.
+
+`permissions install` **idempotently merges** allow rules for `research-assistant` into each platform's
+user-level config (Claude Code `~/.claude/settings.json`, Cursor `~/.cursor/permissions.json`, Gemini CLI
+`~/.gemini/settings.json`), preserving existing keys and rules; after that, agents invoke this CLI without
+per-call approval prompts. Codex / Hermes have no command-level allowlist mechanism — `permissions status`
+explains and offers guidance.
 
 ## Configuration
 

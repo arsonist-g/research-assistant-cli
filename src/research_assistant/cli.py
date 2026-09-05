@@ -6,7 +6,7 @@
   provider 命令（从 registry 动态生成，ADR-0011）：
     ctx7/exa/tavily/firecrawl + openai_compat 的各自子命令
   research-assistant 增值命令：fetch / locate / search
-  管理命令：setup / skills / doctor
+  管理命令：setup / skills / permissions / doctor
 
 全局 flags 可出现在任意位置（预解析抽离）：
     --config <path>  --output json|markdown  --proxy <url>  --verbose  --version
@@ -95,8 +95,11 @@ def _build_parser(config: Any) -> argparse.ArgumentParser:
     from .commands import skills as skills_cmd
     from .commands import doctor as doctor_cmd
     from .commands import config as config_cmd
+    from .commands import permissions as permissions_cmd
 
-    for cmd in (fetch_cmd, locate_cmd, search_cmd, ask_cmd, config_cmd, setup_cmd, skills_cmd, doctor_cmd):
+    for cmd in (
+        fetch_cmd, locate_cmd, search_cmd, ask_cmd, config_cmd, setup_cmd, skills_cmd, permissions_cmd, doctor_cmd
+    ):
         cmd.register(subs)
 
     return parser

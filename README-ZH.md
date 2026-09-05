@@ -69,9 +69,16 @@ research-assistant setup                       # 配置 + 安装 skill/agent
 research-assistant config fields               # 查看各 provider 需填的配置字段
 research-assistant doctor [--show-config]      # 连通性诊断
 research-assistant skills status               # 受管 skill/agent 新鲜度
+research-assistant permissions install         # 把本 CLI 写进各平台放行规则（免逐次审批）
+research-assistant permissions status          # 各平台放行规则状态
 ```
 
 完整列表见 `research-assistant --help`；每条命令也支持 `-h`。
+
+`permissions install` 把 `research-assistant` 的放行规则**幂等合并**进各平台用户级配置（Claude Code
+`~/.claude/settings.json`、Cursor `~/.cursor/permissions.json`、Gemini CLI `~/.gemini/settings.json`），
+已有键和规则原样保留；装好后 agent 调本 CLI 不再逐次弹审批。Codex / Hermes 无命令级放行机制，
+`permissions status` 会说明原因并给出指引。
 
 ## 配置
 
