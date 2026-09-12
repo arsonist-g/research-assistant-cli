@@ -32,17 +32,88 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
 - **可脚本化** — stdout 默认 markdown（人/AI 友好、省 token）；`--output json` 供脚本/jq 解析。语义退出码（`0` 成功 · `1` 内部
   · `2` 参数 · `3` 配置 · `4` 网络 · `5` 反爬）。可作为 skill 装进 Claude Code、Codex 等。
 
-## 快速开始
+## 安装
 
 ```sh
-uv venv .venv
-uv pip install -e . --python .venv/Scripts/python.exe
-research-assistant setup                 # 配置 provider + 安装 skill/agent（可选）
+npm install -g research-assistant
+```
+
+需要 **Node ≥ 18** 和 **Python ≥ 3.10**（在 `PATH` 上）。包的 postinstall 会在包内建一个私有
+Python 运行时并装齐依赖（有 `uv` 用 `uv`，否则回退到标准库 `venv` + `pip`）。不下载自带浏览器
+——`fetch` 直接用本机已装的 Edge/Chrome。
+
+```sh
+research-assistant --version             # 确认 CLI 已在 PATH 上
+research-assistant doctor                # 连通性 + 各命令可用性
+
+research-assistant setup                 # 交互式配置 provider（key 输入有遮蔽）
 research-assistant search "python asyncio" --limit 10
 research-assistant fetch https://example.com
 ```
 
 没有 provider key？`search` 和 `fetch` 仍能用：浏览器源和 Firecrawl 的免 key 层不需要。
+
+### 装进各 agent 平台：skill + 子 agent
+
+包里带两样受管内容：`research-assistant` skill（本 CLI 的操作手册）和 `researcher` 子 agent 定义
+（在隔离上下文里跑完整的 search → fetch → locate 流程，报告写盘，只回摘要）。写入各平台的用户级目录：
+
+```sh
+research-assistant setup --install-skills all     # 配置 provider，然后安装
+research-assistant skills update  --targets all   # 只安装/刷新（非交互）
+research-assistant skills status  --targets all   # missing / stale / up-to-date
+```
+
+| 目标 | skill | agent |
+|---|---|---|
+| `claude` | `~/.claude/skills/research-assistant/SKILL.md` | `~/.claude/agents/researcher.md` |
+| `cursor` | `~/.cursor/skills/research-assistant/SKILL.md` | `~/.cursor/agents/researcher.md` |
+| `codex` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
+| `pidesktop` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.agents/subagents/researcher.md` |
+| `hermes` | `~/.hermes/skills/research-assistant/SKILL.md` | —（人设并入 skill） |
+
+Codex 与 PI-Desktop 共用 `~/.agents/skills/`。可以只装指定平台（`--targets claude,codex`），
+用 `--skills-root PATH` 换安装根目录。
+
+要让 agent 调本 CLI 不再逐次弹审批：
+
+```sh
+research-assistant permissions install
+```
+
+### 桥接日常浏览器的登录 cookie（可选）
+
+`fetch` 可以复用你**日常浏览器**的登录态，登录后的页面无需重输凭据。桥是一个 Manifest V3 扩展，
+CLI 把它放在：
+
+```
+~/.research-assistant/extension/
+```
+
+（`--install-skills` 与 `skills update` 会把它复制到那里。）在你日常使用的 Edge / Chrome 配置里装一次：
+
+1. 打开 `edge://extensions`（或 `chrome://extensions`），打开右上角**开发者模式**。
+2. 点**加载解压缩的扩展**，选择 `~/.research-assistant/extension/`。
+3. 用 `research-assistant doctor` 确认——扩展连上后其 daemon 行会显示 `extConnected=True`。
+   daemon 是按需拉起的，若显示离线先跑一次 `fetch`。
+
+不抓登录页就完全可以跳过；其它功能都不依赖它。
+
+### 更新与卸载
+
+```sh
+npm update -g research-assistant
+npm uninstall -g research-assistant   # 保留 ~/.research-assistant/（配置 + 扩展）
+```
+
+### 源码安装
+
+开发时对着 checkout 跑：
+
+```sh
+uv venv .venv
+uv pip install -e . --python .venv/Scripts/python.exe
+```
 
 ## 命令
 

@@ -38,18 +38,89 @@ for large investigations that keeps the host context clean.
   codes (`0` ok · `1` internal · `2` args · `3` config · `4` network · `5` antibot). Installs as
   a skill into Claude Code, Codex, and friends.
 
-## Quick start
+## Install
 
 ```sh
-uv venv .venv
-uv pip install -e . --python .venv/Scripts/python.exe
-research-assistant setup                 # configure providers + install skill/agent (optional)
+npm install -g research-assistant
+```
+
+Requires **Node ≥ 18** and **Python ≥ 3.10** on `PATH`. The package's postinstall step builds a
+private Python runtime inside the package and installs the CLI's dependencies (`uv` when present,
+otherwise the stdlib `venv` + `pip`). It downloads no browser of its own — `fetch` drives the
+Edge/Chrome already installed on the machine.
+
+```sh
+research-assistant --version             # CLI is on PATH
+research-assistant doctor                # connectivity + per-command availability
+
+research-assistant setup                 # configure providers (interactive; keys are masked)
 research-assistant search "python asyncio" --limit 10
 research-assistant fetch https://example.com
 ```
 
 No provider keys? `search` and `fetch` still work: the browser source and Firecrawl's keyless
 tier need none.
+
+### Install the skill and sub-agent into your agent platforms
+
+The package bundles a `research-assistant` skill (the CLI's operating manual) and a `researcher`
+sub-agent definition. The sub-agent runs the full search → fetch → locate workflow in an isolated
+context, writes its report to disk, and returns only a summary. Write both into each platform's
+user-level directories:
+
+```sh
+research-assistant setup --install-skills all     # configure providers, then install
+research-assistant skills update  --targets all   # install / refresh only (non-interactive)
+research-assistant skills status  --targets all   # missing / stale / up-to-date
+```
+
+| target | skill | agent |
+|---|---|---|
+| `claude` | `~/.claude/skills/research-assistant/SKILL.md` | `~/.claude/agents/researcher.md` |
+| `cursor` | `~/.cursor/skills/research-assistant/SKILL.md` | `~/.cursor/agents/researcher.md` |
+| `codex` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
+| `pidesktop` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.agents/subagents/researcher.md` |
+| `hermes` | `~/.hermes/skills/research-assistant/SKILL.md` | — (persona folded into the skill) |
+
+Codex and PI-Desktop share `~/.agents/skills/`. Pass individual targets instead of `all`
+(`--targets claude,codex`), and `--skills-root PATH` to install under a different root.
+
+To also stop the per-call approval prompts:
+
+```sh
+research-assistant permissions install
+```
+
+### Bridge your daily browser's login cookies (optional)
+
+`fetch` can reuse the login state of your **daily** browser, so pages behind a login come back
+without re-entering credentials. The bridge is a Manifest V3 extension the CLI keeps at
+`~/.research-assistant/extension/` (`--install-skills` and `skills update` copy it there):
+
+1. Open `edge://extensions` (or `chrome://extensions`) in the profile you actually browse with,
+   and turn on **Developer mode**.
+2. Choose **Load unpacked** and select `~/.research-assistant/extension/`.
+3. Confirm with `research-assistant doctor` — its daemon line reports the extension as connected
+   (`extConnected=True`) once the bridge attaches. The daemon is started on demand, so run one
+   `fetch` first if it reads as offline.
+
+Skip this if you never fetch logged-in pages; nothing else depends on it.
+
+### Update or remove
+
+```sh
+npm update -g research-assistant
+npm uninstall -g research-assistant   # leaves ~/.research-assistant/ (config + extension) in place
+```
+
+### From source
+
+For development against a checkout:
+
+```sh
+uv venv .venv
+uv pip install -e . --python .venv/Scripts/python.exe
+```
 
 ## Commands
 

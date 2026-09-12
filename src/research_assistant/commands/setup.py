@@ -46,7 +46,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--browser-channel", choices=["msedge", "chrome"], help="Browser channel for fetch fallback.")
     p.add_argument("--browser-executable", help="Browser executable path (overrides channel auto-detect for non-standard install locations).")
     p.add_argument("--daemon-port", type=int, help="Cookie daemon port.")
-    p.add_argument("--install-skills", help="Comma list of families to install (claude,codex,cursor,hermes,all).")
+    p.add_argument(
+        "--install-skills",
+        help=f"Comma list of families to install ({','.join(targets_mod.ALL_FAMILIES)},all).",
+    )
     p.add_argument("--skills-root", help="Override install root (default $HOME).")
     p.set_defaults(_handler=run)
 

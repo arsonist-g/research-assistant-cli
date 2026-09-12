@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import tomllib  # 3.11+；3.10 测试环境若是 3.10 需 tomli，此处 venv 为 3.12
 
@@ -19,18 +20,24 @@ from research_assistant.targets import AGENT_NAME, ALL_FAMILIES, SKILL_NAME
 
 
 class TestTargetsMatrix:
-    def test_four_families_present(self):
-        assert set(ALL_FAMILIES) == {"claude", "cursor", "codex", "hermes"}
+    def test_five_families_present(self):
+        assert set(ALL_FAMILIES) == {"claude", "cursor", "codex", "hermes", "pidesktop"}
 
     def test_format_per_family(self):
         assert ALL_FAMILIES["claude"].agent_format == "md"
         assert ALL_FAMILIES["cursor"].agent_format == "md"
         assert ALL_FAMILIES["codex"].agent_format == "toml"
         assert ALL_FAMILIES["hermes"].agent_format == "none"
+        assert ALL_FAMILIES["pidesktop"].agent_format == "md"
 
     def test_hermes_has_no_agent_file(self):
         assert ALL_FAMILIES["hermes"].agent_relative is None
         assert ALL_FAMILIES["hermes"].agent_support == "runtime"
+
+    def test_pidesktop_shares_skill_dir_with_codex(self):
+        """PI-Desktop 的 host-core 硬编码 AGENTS_DIR=".agents"，与 codex 家同根。"""
+        assert ALL_FAMILIES["pidesktop"].skill_relative == ALL_FAMILIES["codex"].skill_relative
+        assert ALL_FAMILIES["pidesktop"].agent_relative == ".agents/subagents/researcher.md"
 
     def test_skill_name_constants(self):
         assert SKILL_NAME == "research-assistant"
@@ -100,6 +107,37 @@ class TestGenerateAgentHermes:
         assert installer.generate_agent(ALL_FAMILIES["hermes"]) is None
 
 
+class TestGenerateAgentPideDesktop:
+    """PI-Desktop 契约（host-core user_subagents.rs + shared subagent-definition.ts）。
+
+    - tools 用方括号列表，工具名限于其可指派集合（Read/Glob/Grep/BrowserPreview/Bash/Edit/Write）。
+    - 不写 model：其 model 必须是 `<provider>/<model>`，省略即继承会话模型。
+    - description 必填；正文即 delegate 的 system prompt。
+    """
+
+    def test_bracket_tool_list_and_no_model_pin(self):
+        text = installer.generate_agent(ALL_FAMILIES["pidesktop"])
+        fm = text.split("---\n", 2)[1]
+        tools_line = next(ln for ln in fm.splitlines() if ln.startswith("tools:"))
+        assert tools_line == "tools: [Bash, Read, Write]"
+        assert "model:" not in fm
+
+    def test_name_and_description_satisfy_pidesktop_parser(self):
+        text = installer.generate_agent(ALL_FAMILIES["pidesktop"])
+        fm = text.split("---\n", 2)[1]
+        name = next(ln for ln in fm.splitlines() if ln.startswith("name:"))
+        assert re.fullmatch(r"name: [a-z0-9-]{1,40}", name)
+        desc = next(ln for ln in fm.splitlines() if ln.startswith("description:"))
+        assert desc != "description:"
+        assert len(desc) - len("description: ") <= 400
+
+    def test_body_carries_the_persona(self):
+        text = installer.generate_agent(ALL_FAMILIES["pidesktop"])
+        body = text.split("---\n", 2)[2]
+        assert body.strip()
+        assert "research" in body.lower()
+
+
 # ---------------------------------------------------------------------------
 # skill_for_family
 # ---------------------------------------------------------------------------
@@ -144,6 +182,15 @@ class TestInstallAndStatus:
         hermes_entry = next(e for e in result["installed"] if e["family"] == "hermes")
         assert hermes_entry["agent_path"] is None
         assert hermes_entry["agent_format"] == "none"
+
+    def test_pidesktop_installs_skill_and_subagent_under_agents_root(self, tmp_path):
+        result = installer.install(["pidesktop"], root=tmp_path)
+        assert result["failed"] == []
+        assert (tmp_path / ".agents/skills/research-assistant/SKILL.md").exists()
+        agent_file = tmp_path / ".agents/subagents/researcher.md"
+        assert agent_file.exists()
+        # 非递归扫描目录里的直接 .md 文件，frontmatter 后正文非空
+        assert agent_file.read_text(encoding="utf-8").split("---\n", 2)[2].strip()
 
     def test_status_reports_up_to_date_after_install(self, tmp_path):
         installer.install(["claude"], root=tmp_path)
