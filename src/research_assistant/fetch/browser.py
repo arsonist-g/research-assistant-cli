@@ -1,4 +1,4 @@
-"""浏览器抓取：1 浏览器多 tab + headed + CF auto-detect + 网络静默等待。
+"""浏览器抓取：1 浏览器多 tab + 真无头(headless=new) + CF auto-detect + 网络静默等待。
 
 fetch 浏览器层与 browser 平台共用。1 个 ChromiumPage(browser)+ N tab（每 url 一个），共享
 cookie（注一次），ThreadPoolExecutor 并发各 tab：导航 → cfbypass.solve（无 CF 秒过，有 CF 解题）
@@ -6,14 +6,17 @@ cookie（注一次），ThreadPoolExecutor 并发各 tab：导航 → cfbypass.s
 启动前清孤儿 profile + browser 锁（崩溃自愈）。浏览器进程数受 config.browser.max_browser_instances
 跨进程限流（.browser-locks/ PID 标记）。
 
-演进：去 headless（2026-07，统一 headed+CF auto-detect）；多 tab（2026-07，原每 url 独立浏览器
-改 1 browser 多 tab 省内存）；网络静默等待（2026-07，替代 html 长度轮询，JS/API 加载更稳）。
+演进：去 headless（2026-07，统一 headed+CF auto-detect）；**回归真无头（2026-09-13，DEC-028：
+headless 唯一堵点是 UA 里的 "Headless" 标记，加 --user-agent 修复；弃用 headed+SW_HIDE）**；
+多 tab（2026-07，原每 url 独立浏览器改 1 browser 多 tab 省内存）；网络静默等待（2026-07，
+替代 html 长度轮询，JS/API 加载更稳）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import sys
@@ -307,11 +310,76 @@ async def _get_login_cookies(config: Config) -> list[dict[str, Any]]:
         return []
 
 
-def _build_dp_options(config: Config, profile_dir: Path, *, headless: bool = False) -> Any:
-    """构造 DrissionPage ChromiumOptions：用户 Edge + 隔离 profile + 反检测/防弹窗 args。
+def _file_version(exe: str) -> str | None:
+    """读可执行文件版本号（用于构造本机真实 UA，避免硬编码）。失败返回 None。
 
-    headless=False（默认，fetch/CF 路径）：CF 识别 headless，必须 headed。
-    headless=True（search_engine 用）：结果页无 CF 挑战，headless 更快且不打扰用户。
+    Windows 用 GetFileVersionInfoW（GUI 子系统程序 --version 不打印到控制台）；
+    macOS/Linux 用 `<exe> --version` 输出里的 x.y.z.w。
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            from ctypes import wintypes
+
+            ver = ctypes.windll.version
+            size = ver.GetFileVersionInfoSizeW(exe, None)
+            if not size:
+                return None
+            buf = ctypes.create_string_buffer(size)
+            if not ver.GetFileVersionInfoW(exe, 0, size, buf):
+                return None
+            ptr = ctypes.c_void_p()
+            length = wintypes.UINT()
+            # 根块查询串是单个反斜杠（VS_FIXEDFILEINFO）
+            if not ver.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)):
+                return None
+            ffi = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint32))
+            ms, ls = ffi[2], ffi[3]  # FileVersionMS / FileVersionLS
+            return f"{ms >> 16}.{ms & 0xffff}.{ls >> 16}.{ls & 0xffff}"
+        import subprocess
+
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+)", (out.stdout or "") + (out.stderr or ""))
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _native_user_agent(exe: str | None, channel: str) -> str | None:
+    """构造本机浏览器的「真实 UA」（不含 headless 的 "Headless" 标记）。
+
+    headless 启动时 Chromium 会在 UA 产品串前插 "Headless"（HeadlessChrome/<v>），而
+    Sec-CH-UA / navigator.userAgentData 等 client hints 是干净的 → UA 头与 hints 自相矛盾，
+    被 CF 识别（DEC-028）。传 --user-agent=<真实 UA> 让 Chromium 由该串派生一致的 hints；
+    版本取可执行文件版本，故无需硬编码、Edge/Chrome 各自一致。探测失败返回 None（调用方降级）。
+    """
+    if not exe:
+        return None
+    ver = _file_version(exe)
+    if not ver:
+        return None
+    major = ver.split(".")[0]
+    if sys.platform.startswith("win"):
+        plat = "Windows NT 10.0; Win64; x64"
+    elif sys.platform == "darwin":
+        plat = "Macintosh; Intel Mac OS X 10_15_7"
+    else:
+        plat = "X11; Linux x86_64"
+    ua = (
+        f"Mozilla/5.0 ({plat}) AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{major}.0.0.0 Safari/537.36"
+    )
+    if channel == "msedge":
+        ua += f" Edg/{major}.0.0.0"
+    return ua
+
+
+def _build_dp_options(config: Config, profile_dir: Path) -> Any:
+    """构造 DrissionPage ChromiumOptions：用户 Edge + 隔离 profile + 真无头 + 反检测/防弹窗 args。
+
+    统一 --headless=new（DEC-028，弃用 headed+隐藏窗口）：headless 与 CF 不再冲突，关键是
+    --user-agent 必须是不带 "Headless" 的本机真实 UA（否则 UA 头与 client hints 矛盾会被 CF 拦），
+    并用 --screen-info 让虚拟屏尺寸与窗口一致（消掉 headless 默认 800x600 的几何特征）。
     DrissionPage 直接 CDP 驱动用户 Edge，不经自动化框架运行时，无 playwright 注入痕迹。
     防弹窗照 cdt 配方（launch args + 后续 _write_suppress_prefs 的 Preferences 双保险）。
     """
@@ -321,13 +389,20 @@ def _build_dp_options(config: Config, profile_dir: Path, *, headless: bool = Fal
     co = ChromiumOptions()
     co.set_browser_path(exe)
     co.set_user_data_path(str(profile_dir))
-    co.headless(headless)
+    co.headless(True)  # DrissionPage 4.1.1.4：True → --headless=new
     co.auto_port(True)
     w, h = cfbypass.REAL_VIEWPORT["width"], cfbypass.REAL_VIEWPORT["height"]
     co.set_argument(f"--window-size={w},{h}")
-    # 启动即挪到屏外（与启动后 _hide_window 双保险）：消除 ChromiumPage 构造到 hide 之间的主窗口闪现。
-    co.set_argument("--window-position=-32000,-32000")
-    # 设 UI 语言为英语：隔离 profile 抓的多是英文页（CF 挑战页等），Edge 见"页面语言=用户语言"就不弹翻译框。
+    # 虚拟屏与窗口同尺寸（Chrome 142+ / Edge 152 支持；更老 Chromium 忽略未知开关）：
+    # headless 默认 screen=800x600 与 window-size 矛盾，是廉价几何特征。
+    co.set_argument("--screen-info", f"{{{w}x{h}}}")
+    # UA 去掉 "Headless"：headless 默认 UA 是 HeadlessChrome/<v>，而 client hints 干净 → 矛盾。
+    ua = _native_user_agent(exe, config.browser.channel)
+    if ua:
+        co.set_argument("--user-agent", ua)
+    else:
+        logger.warning("未能探测浏览器版本，headless UA 仍带 Headless 标记（CF 可能拦截）")
+    # 设 UI 语言为英语：隔离 profile 抓的多是英文页（CF 挑战页等），Edge 见“页面语言=用户语言”就不弹翻译框。
     # 比 --disable-features=Translate 更可靠——后者实测仍弹（Edge 翻译弹窗不完全受 Chromium Translate feature 控制）。
     co.set_argument("--lang=en-US")
     # 翻译弹窗根治：DrissionPage 默认带 --disable-features=PrivacySandboxSettings4，与 Translate
@@ -415,22 +490,6 @@ def _write_suppress_prefs(user_data_dir: Path) -> None:
         logger.info("已写 profile Preferences 抑制弹窗: %s", prefs_file)
     except Exception as e:
         logger.warning("写 Preferences 失败（仅靠 --disable-features 兜底）: %s", e)
-
-
-def _hide_window(page: Any) -> None:
-    """隐藏 CF 兜底浏览器窗口（Win32 ShowWindow SW_HIDE）。
-
-    窗口仍在（真 headed 渲染，CF 检测不到 headless），但不占视野——区别于 headless（headless 实测
-    即便覆盖 UA+screen 仍被 CF 深层指纹识别）。仅 Windows + pywin32 生效；其他平台或缺依赖时
-    静默跳过（窗口可见，不影响功能）。
-    """
-    try:
-        from DrissionPage._functions.tools import show_or_hide_browser
-
-        show_or_hide_browser(page, hide=True)
-        logger.info("CF 绕过浏览器窗口已隐藏")
-    except Exception as e:
-        logger.debug("隐藏窗口跳过（%s）", e)
 
 
 def _close_browser(page: Any, browser_pid: int) -> None:
@@ -542,7 +601,6 @@ def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], 
         _write_suppress_prefs(profile_dir)
         page = ChromiumPage(_build_dp_options(config, profile_dir))
         browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
-        _hide_window(page)
         _inject_cookies_dp(page, cookies)
         return _fetch_one_tab(page, url, fmt)  # page(ChromiumPage)即 tab0，可直接喂 _fetch_one_tab
     finally:
@@ -588,7 +646,6 @@ def _fetch_all_tabs_sync(
         _write_suppress_prefs(profile_dir)
         page = ChromiumPage(_build_dp_options(config, profile_dir))
         browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
-        _hide_window(page)
         _inject_cookies_dp(page, cookies)  # 注一次，所有 tab 共享
 
         # 主线程：预建 tab。tab0(page) 给第 1 个 url；其余 new_tab(background) 空 tab。
@@ -649,7 +706,7 @@ async def fetch_with_browser(
     fmt: str = "markdown",
     timeout: float = 60.0,
 ) -> dict[str, str | None]:
-    """批量用 headed 浏览器抓取（1 browser 多 tab，fetch 浏览器层与 browser fetch 共用）。
+    """批量用 headless 浏览器抓取（1 browser 多 tab，fetch 浏览器层与 browser fetch 共用）。
 
     返回 {url: content_or_None}。fmt=html 时每页返回原始 html，否则 markdown（trafilatura 抽正文）。
     单 tab 超过 timeout 秒记 None 不阻塞整批；finally 杀 browser PID 让残余 worker 解阻塞退出。

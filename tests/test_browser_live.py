@@ -9,7 +9,7 @@
   - browser fetch：grok.com（CF 挑战 + SPA）→ 落盘 md 非空，不含 CF 挑战特征。
 
 依赖：DrissionPage 已装、本地 Edge/Chromium 可执行、外网可达。
-注意：browser fetch 是 headed（弹真实 Edge 窗口，CF 识别 headless）；browser search 是 headless。
+注意：browser fetch 与 browser search 都是 headless（DEC-028，不弹浏览器窗口）。
 """
 
 from __future__ import annotations

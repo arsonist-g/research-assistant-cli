@@ -240,7 +240,7 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
 
     try:
         _write_suppress_prefs(profile_dir)
-        page = ChromiumPage(_build_dp_options(config, profile_dir, headless=True))
+        page = ChromiumPage(_build_dp_options(config, profile_dir))
         browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
         logger.info(
             "搜索引擎(%s) headless 多 tab(%s)，query=%r limit=%d max_pages=%d",

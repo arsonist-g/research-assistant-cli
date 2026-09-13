@@ -31,7 +31,7 @@ Three commands do the heavy lifting and need no configuration to start. Reach fo
 ### `fetch <url>...`: cross-tool page fetch with automatic escalation
 
 `fetch` tries the cheap path first and climbs only on failure: the normal APIs (tavily extract,
-firecrawl scrape), then a headed real browser with Cloudflare auto-detect. Login cookies are
+firecrawl scrape), then a headless real browser with Cloudflare auto-detect. Login cookies are
 injected through the bundled extension bridge, so logged-in pages work without re-entering
 credentials. It works out of the box: with zero provider config the normal APIs simply fail and
 the browser fallback still returns the page.
@@ -77,14 +77,14 @@ tier genuinely cannot return the content.
 |------|------|----------|----------|
 | 1. API | `exa`, `tavily` | Structured search APIs; clean JSON, no rendering. `tavily extract` returns ready markdown, `tavily map`/`crawl` cover a whole site; `exa` adds `similar`, `contents`, `answer`, and async `research`. Fast and cheap. | Simple or public pages; search with snippets; fast fetch of a known URL; site map or crawl. |
 | 2. Firecrawl | `firecrawl` | Residential or home-bandwidth infrastructure; `scrape`/`search`/`interact`/`parse` are **keyless**, the other endpoints (`map`, `crawl`, `extract`, `agent`, `monitor`) need a key. More likely than Tier 1 to succeed on lightly protected pages, and the only tier with site-wide crawl and structured extraction. | A page refuses raw HTTP but shows no hard Cloudflare challenge. Batch scrape many URLs, crawl a whole site, or extract structured data with a schema. |
-| 3. Browser | `fetch`, `browser` | Drives the user's real Edge/Chromium, same engine as the daily browser so login cookies stay valid. `fetch` auto-escalates: normal API, then a headed browser with Cloudflare auto-detect (no challenge means solve returns instantly). `browser` is the direct browser platform when you already know you want the browser: `browser fetch` (headed + CF auto-detect, skips the API) and `browser search` (headless search engine: Bing CN/intl, Google). | Everything above failed; or the page is behind Cloudflare, needs JS, or needs login cookies; or you want a browser search engine directly. |
+| 3. Browser | `fetch`, `browser` | Drives the user's real Edge/Chromium, same engine as the daily browser so login cookies stay valid. `fetch` auto-escalates: normal API, then a headless browser with Cloudflare auto-detect (no challenge means solve returns instantly). `browser` is the direct browser platform when you already know you want the browser: `browser fetch` (headless + CF auto-detect, skips the API) and `browser search` (headless search engine: Bing CN/intl, Google). | Everything above failed; or the page is behind Cloudflare, needs JS, or needs login cookies; or you want a browser search engine directly. |
 
 Notes:
-- Escalation is **automatic inside `fetch`**: normal API, then a headed browser with CF
+- Escalation is **automatic inside `fetch`**: normal API, then a headless browser with CF
   auto-detect (no CF challenge means solve returns instantly). You usually just call `fetch`
   and let it climb.
 - `browser` is the direct browser platform, used when you already know the page needs a
-  browser: `browser fetch` skips the API and goes straight to the headed browser with CF
+  browser: `browser fetch` skips the API and goes straight to the headless browser with CF
   auto-detect; `browser search` runs a headless search engine (default Bing international,
   since CN Bing filters some sensitive terms).
 - `fetch` and `browser fetch` inject login cookies through the bundled MV3 extension bridge,
@@ -184,11 +184,11 @@ research-assistant firecrawl agent "<prompt>" [--model spark-1-mini|spark-1-pro]
 research-assistant firecrawl monitor   # needs key; list your team's currently active crawl jobs
 research-assistant firecrawl parse <file> [--format markdown|html|json ...] [--pdf-mode fast|auto|ocr] [--max-pages N (1-10000)]   # keyless; upload a local PDF/DOCX/HTML → markdown/json (no URL needed)
 
-# Tier 3: real browser. fetch auto-escalates (normal API, then headed browser with CF auto-detect).
+# Tier 3: real browser. fetch auto-escalates (normal API, then headless browser with CF auto-detect).
 research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [--login|--no-login] [--no-browser] [--format markdown|html|text] [--timeout N (1-300, default 60)] [--write PATH]   # --format used by each source that supports it (else markdown); --timeout per-URL (both normal API and browser layers); --write PATH saves (single URL), else auto-named tmp-doc/<YYYY-MM-DD>/scrape-<slug>-<HH-MM-SS>-<rand>.md
 
-# browser platform: direct browser, no API attempt. fetch = headed + CF auto-detect; search = headless engine.
-research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headed browser (--write, not global --output)
+# browser platform: direct browser, no API attempt. fetch = headless + CF auto-detect; search = headless engine.
+research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headless browser (--write, not global --output)
 research-assistant browser search "<query>" [--engine bing-cn|bing-intl|google] [--limit N] [--max-pages N] [--timeout N (1-300, default 60)]   # headless search engine (default bing-intl)
 
 # Aggregate the search sources in one call (default: configured exa,tavily + browser; browser is

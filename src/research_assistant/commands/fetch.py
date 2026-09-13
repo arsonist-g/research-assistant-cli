@@ -3,7 +3,7 @@
     research-assistant fetch <url> [<url>...] [--write <path>] [--format markdown|html|text] [--timeout N] [--no-browser]
                               [--login|--no-login] [--concurrency N]
 
-普通接口（tavily extract / firecrawl scrape，直接出 md）→ 失败回退 headed 浏览器 + CF auto-detect。
+普通接口（tavily extract / firecrawl scrape，直接出 md）→ 失败回退 headless 浏览器 + CF auto-detect。
 批量 = 单浏览器多页并发（ADR-0004）。落盘只写快照（D8）。
 响应：FetchResult[]{url, method, status, md_path, error?}
 """

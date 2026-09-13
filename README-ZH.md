@@ -18,8 +18,8 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
 
 - **多源聚合搜索** — 一次 `search` 扇出到 `exa`、`tavily`、`firecrawl` 和无头浏览器引擎
   （必应 / 谷歌），合并去重。**零配置可用**：浏览器源不需要 API key，永远在默认集合里。
-- **Cloudflare / 反爬绕过** — `fetch` 驱动你**真实的** Edge/Chromium（有头，Cloudflare 检测不到
-  headless），点击穿过 Turnstile。自动升级：先走便宜的 API，失败才上真实浏览器。
+- **Cloudflare / 反爬绕过** — `fetch` 驱动你**真实的** Edge/Chromium 走**真无头**（`--headless=new`
+  + 真实 UA 修复，不被 CF 识别），点击穿过 Turnstile。自动升级：先走便宜的 API，失败才上真实浏览器。
 - **一个浏览器，多个 tab** — 抓 N 个 URL 只开一个浏览器进程 + N 个 tab，不是 N 个浏览器。搜索
   按首页结果数智能推断、并发翻页；跨进程实例上限防止浏览器失控。
 - **登录 cookie 桥接** — 内置 MV3 扩展把日常浏览器的登录 cookie 注入 fetch，登录页无需重输凭据。

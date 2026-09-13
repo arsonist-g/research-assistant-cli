@@ -133,3 +133,83 @@ def test_cleanup_reaps_dead_pid_lock(home):
     reaped = cleanup_browser_locks()
     assert reaped >= 1
     assert not d.exists()
+
+
+# ---------------------------------------------------------------------------
+# DEC-028：真无头 —— 真实 UA 构造与启动参数
+# ---------------------------------------------------------------------------
+
+
+def test_native_user_agent_edge(monkeypatch):
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_file_version", lambda exe: "152.0.4191.66")
+    monkeypatch.setattr(b.sys, "platform", "win32")
+    ua = b._native_user_agent("C:/fake/msedge.exe", "msedge")
+    assert ua == (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0"
+    )
+
+
+def test_native_user_agent_never_contains_headless(monkeypatch):
+    """核心不变量：构造出的 UA 绝不带 "Headless"（带则 UA 头与 client hints 矛盾被 CF 拦）。"""
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_file_version", lambda exe: "152.0.4191.66")
+    monkeypatch.setattr(b.sys, "platform", "win32")
+    assert "Headless" not in b._native_user_agent("C:/fake/msedge.exe", "msedge")
+
+
+def test_native_user_agent_chrome_has_no_edge_token(monkeypatch):
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_file_version", lambda exe: "153.0.8010.36")
+    monkeypatch.setattr(b.sys, "platform", "win32")
+    ua = b._native_user_agent("C:/fake/chrome.exe", "chrome")
+    assert "Chrome/153.0.0.0" in ua
+    assert "Edg/" not in ua
+
+
+def test_native_user_agent_none_when_version_unknown(monkeypatch):
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_file_version", lambda exe: None)
+    assert b._native_user_agent("C:/fake/msedge.exe", "msedge") is None
+    assert b._native_user_agent(None, "msedge") is None
+
+
+def test_build_dp_options_is_headless_with_real_ua(monkeypatch):
+    """DEC-028：启动恒 --headless=new + 真实 UA + screen-info，且无 headed 专用参数。"""
+    from pathlib import Path
+
+    from research_assistant.config import Config
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_resolve_executable", lambda cfg: ("C:/fake/msedge.exe", "test"))
+    monkeypatch.setattr(b, "_file_version", lambda exe: "152.0.4191.66")
+    monkeypatch.setattr(b.sys, "platform", "win32")
+    monkeypatch.setattr(b, "resolve_proxy", lambda u: "")
+    co = b._build_dp_options(Config(), Path("C:/tmp/p"))
+    args = " ".join(co.arguments)
+    assert "--headless=new" in args
+    assert "Chrome/152.0.0.0" in args and "Edg/152.0.0.0" in args
+    assert "Headless" not in args
+    assert "--screen-info={1440x900}" in args
+    assert "--window-position" not in args
+
+
+def test_build_dp_options_still_headless_when_version_unknown(monkeypatch):
+    """版本探测失败：降级为不带 --user-agent，但仍 headless（不崩、不回退 headed）。"""
+    from pathlib import Path
+
+    from research_assistant.config import Config
+    from research_assistant.fetch import browser as b
+
+    monkeypatch.setattr(b, "_resolve_executable", lambda cfg: ("C:/fake/msedge.exe", "test"))
+    monkeypatch.setattr(b, "_file_version", lambda exe: None)
+    monkeypatch.setattr(b, "resolve_proxy", lambda u: "")
+    co = b._build_dp_options(Config(), Path("C:/tmp/p"))
+    args = " ".join(co.arguments)
+    assert "--headless=new" in args
+    assert "--user-agent" not in args

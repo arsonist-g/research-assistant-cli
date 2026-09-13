@@ -177,7 +177,6 @@ async def test_fetch_all_tabs_per_future_timeout(monkeypatch, home):
     monkeypatch.setattr(b, "_release_browser_slot", lambda d: None)
     monkeypatch.setattr(b, "_safe_rmtree", lambda d: None)
     monkeypatch.setattr(b, "_write_suppress_prefs", lambda d: None)
-    monkeypatch.setattr(b, "_hide_window", lambda p: None)
     monkeypatch.setattr(b, "_inject_cookies_dp", lambda p, c: None)
     closed = []
     monkeypatch.setattr(b, "_close_browser", lambda p, pid: closed.append(pid))

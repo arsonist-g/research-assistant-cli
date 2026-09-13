@@ -2,7 +2,8 @@
 
 不换浏览器内核（仍在用户的 Edge/Chromium 内，cookie 不跨内核）。配方：
   1. DrissionPage 直接 CDP 驱动用户 Edge，无 playwright 注入痕迹（不经自动化框架运行时）。
-  2. headed 启动（headless 会被 CF 识别）。
+  2. headless 启动（--headless=new）；UA 必须是本机真实 UA（不含 "Headless" 标记，DEC-028），
+     否则 UA 头与 client hints 矛盾会被 CF 拦。
   3. DOM.getDocument(depth=-1, pierce=True) 穿透 closed shadow root + 嵌套 iframe，
      定位 CF Turnstile checkbox 的 backendNodeId。DrissionPage 的 ele() 底层用
      DOM.performSearch(includeUserAgentShadowDOM=True)，只穿透 UA shadow DOM，看不到
@@ -15,8 +16,7 @@
      是标题不再含挑战特征。
 
 本模块操作 DrissionPage ChromiumPage（同步 API）；browser.py 用 asyncio.to_thread 在
-async 上下文中调用。作为 fetch 浏览器路径的最后兜底：headless 抓取遇 CF → 切 headed
-DrissionPage + 本模块解题。
+async 上下文中调用。作为 fetch 浏览器路径的 CF 兜底：headless 抓取遇 CF 挑战 → 本模块定位并解题。
 """
 
 from __future__ import annotations

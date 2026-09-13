@@ -1,9 +1,9 @@
 """browser provider：本地浏览器作为一个"平台"（与 exa/tavily/firecrawl 同级，走 registry 自动发现）。
 
 不是 HTTP API（无 key/base_url），直接驱动本地浏览器：
-  - browser fetch：headed DrissionPage + CF auto-detect 抓取（跳过普通 API，直接浏览器入口）。
+  - browser fetch：headless DrissionPage + CF auto-detect 抓取（跳过普通 API，直接浏览器入口）。
   - browser search：headless DrissionPage 抓搜索引擎结果页（必应国内/国际、Google），页数表翻页。
-与 fetch 命令的浏览器层共用 fetch_with_browser（去 headless 后统一 headed+CF auto-detect）。
+与 fetch 命令的浏览器层共用 fetch_with_browser（统一 headless + CF auto-detect）。
 config 无需 [[provider]] type=browser，运行参数从 config.browser 读（channel 等）；永远可用。
 """
 
@@ -24,7 +24,7 @@ class BrowserProvider(Provider):
     type = "browser"
     command = "browser"
     aliases = ["br"]
-    help = "Local browser platform: headed fetch with CF auto-detect, or headless search-engine search."
+    help = "Local browser platform: headless fetch with CF auto-detect, or headless search-engine search."
 
     def capabilities(self) -> list[Capability]:
         return [

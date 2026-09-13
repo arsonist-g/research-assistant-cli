@@ -20,9 +20,9 @@ for large investigations that keeps the host context clean.
 - **Aggregated multi-source search** — one `search` call fans out across `exa`, `tavily`,
   `firecrawl`, and a headless browser engine (Bing/Google), then merges and de-duplicates.
   **Zero-config works**: the browser source needs no API key and is always in the default set.
-- **Cloudflare & anti-bot bypass** — `fetch` drives your **real** Edge/Chromium (headed, so
-  Cloudflare does not flag it) and clicks through Turnstile. It auto-escalates: cheap API first,
-  real browser only when the API fails.
+- **Cloudflare & anti-bot bypass** — `fetch` drives your **real** Edge/Chromium in true headless
+  mode (`--headless=new`, plus the real-User-Agent fix that keeps it unflagged) and clicks through
+  Turnstile. It auto-escalates: cheap API first, real browser only when the API fails.
 - **One browser, many tabs** — fetching N URLs opens one browser process with N tabs, not N
   browsers. Search paginates concurrently with smart page-count inference; a cross-process
   instance cap prevents runaway browsers.
