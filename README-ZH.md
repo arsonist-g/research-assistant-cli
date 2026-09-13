@@ -27,6 +27,9 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
   更准。
 - **web-LLM `ask` + 长文档 `locate`** — `ask` 用自带网页搜索的 LLM 回答自然语言问题并附引用；
   `locate` 在阅读前锁定 10k 行文件里哪些段落重要。
+- **GitHub 走 API 而非爬页面** — `fetch` 自动接管 GitHub 文件 / 仓库 URL（`method: "github"`），
+  改读 REST API：文件原文精确，仓库返回元数据 + 干净的 README。免 key 可用（公开仓库取文件零配额），
+  填 token 解锁 5000 次/小时与私有仓库。`github file` / `github repo` 也可单独调用。
 - **插件式 provider** — 加一个 provider = 一个模块 + 一条配置；注册表自动发现，出现在 `--help`。
   无需改路由或 CLI。
 - **可脚本化** — stdout 默认 markdown（人/AI 友好、省 token）；`--output json` 供脚本/jq 解析。语义退出码（`0` 成功 · `1` 内部
@@ -132,6 +135,10 @@ research-assistant firecrawl scrape <url>...   # 免 key markdown
 research-assistant ctx7 docs /org/repo "<q>"   # 官方文档（Context7）
 research-assistant ask "<question>"            # web-LLM 回答 + 引用
 
+# GitHub（走 REST API 而非爬 HTML；fetch 会自动接管这类 URL）
+research-assistant github file <url>           # 文件原文；#L10-L20 片段只取该区间
+research-assistant github repo <url>           # 仓库元数据 + README（2 次 API 调用，key 可省）
+
 # 长文档
 research-assistant locate <md_path> "<q>"      # 锚点式相关性扫描
 
@@ -169,6 +176,11 @@ base_url = "https://api.openai.com/v1"  # 默认；用兼容渠道时换成其�
 api_key  = "..."
 model    = "grok-..."
 
+[[provider]]
+type     = "github"                 # 可选：`github file` / `github repo` + fetch 自动接管
+api_key  = "ghp_..."                # 可选；不填 = 匿名（60 次/小时，填了 5000 次/小时）
+base_url = "https://api.github.com" # 默认；GitHub Enterprise 需填 https://HOST/api/v3
+
 [proxy]
 url = ""                            # 空 = 自动检测系统代理
 
@@ -178,7 +190,8 @@ max_browser_instances = 3           # 并发浏览器进程上限（跨 CLI）
 ```
 
 未配置的 provider 直接跳过。`firecrawl scrape` / `search` 和浏览器源是免 key 的，所以空配置下
-`search` 和 `fetch` 也能跑。
+`search` 和 `fetch` 也能跑。`github file` / `github repo` 同样免 key（匿名 60 次/小时），且
+`fetch` 会在普通 API 之前自动接管 GitHub 文件 / 仓库 URL。
 
 ## 工作原理
 

@@ -123,6 +123,23 @@ page and read it yourself.
 scores chunks with a small model, then matches code strings back to exact line numbers. Use
 it to **pre-screen which parts of a long page or doc matter** before reading, so you avoid
 blind full reads of 10k-line files.
+### E. GitHub files and repositories (`github`), a dedicated domain
+
+GitHub is not a good scraping target: the page is mostly navigation chrome, while the REST API
+returns the exact file bytes and structured repository metadata. So for GitHub URLs the toolkit
+talks to the API and never renders the HTML.
+
+- **`fetch` intercepts them automatically** (`method: "github"`). Keep calling `fetch`; no manual
+  routing needed. A repo page that used to come back as tens of KB of file list, contributor
+  avatars and footer now comes back as a compact metadata block plus the clean README.
+- **`github file` / `github repo`** are the explicit commands, for when you want a known file's
+  raw content, or the structured fields a rendered page only scatters through its markup
+  (stargazers, license, default_branch, pushed_at, topics, size).
+- **Zero config works** (anonymous). A token is optional but recommended: 60 vs 5000 requests/hour.
+- **Private repos need a token**; public file content is read through `raw.githubusercontent.com`
+  and costs no API quota at all.
+- **`#L10-L20` is honored** — a deep link returns just those lines, so you can jump straight to the
+  relevant part of a long file instead of fetching all of it.
 
 ## Core principle: consume sources, do not inherit synthesis
 
@@ -186,6 +203,10 @@ research-assistant firecrawl parse <file> [--format markdown|html|json ...] [--p
 
 # Tier 3: real browser. fetch auto-escalates (normal API, then headless browser with CF auto-detect).
 research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [--login|--no-login] [--no-browser] [--format markdown|html|text] [--timeout N (1-300, default 60)] [--write PATH]   # --format used by each source that supports it (else markdown); --timeout per-URL (both normal API and browser layers); --write PATH saves (single URL), else auto-named tmp-doc/<YYYY-MM-DD>/scrape-<slug>-<HH-MM-SS>-<rand>.md
+# GitHub file/repo URLs are intercepted before the normal API tier: fetch reads them through the
+# GitHub REST API (exact file bytes / repo metadata + README) instead of rendering the HTML page,
+# and reports method: "github". Public file content goes through raw.githubusercontent.com, which
+# costs no API quota and needs no token; api_key is optional (see section E).
 
 # browser platform: direct browser, no API attempt. fetch = headless + CF auto-detect; search = headless engine.
 research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headless browser (--write, not global --output)
@@ -220,6 +241,19 @@ research-assistant ask "<natural-language question>" [--system TEXT]
 ```sh
 research-assistant locate <md_path> "<query>" [--top N] [--scope lines|paragraph] [--context N] [--concurrency N]
 ```
+### E. GitHub files and repositories (API, not scraped HTML; `api_key` optional)
+
+```sh
+research-assistant github file <url>    # exact file bytes from a blob/raw URL; a #L10-L20 fragment selects lines
+research-assistant github repo <url>    # metadata + README (exactly 2 API calls)
+```
+
+`fetch` intercepts GitHub file and repo URLs **automatically** (it reports `method: "github"`),
+so you normally do not call these directly — reach for them when you want the structured fields
+(`stargazers_count`, `license`, `default_branch`, `pushed_at`, `topics`) in isolation, or a single
+file without the wrapper. Both work with **zero config**; `base_url` (GitHub Enterprise:
+`https://HOST/api/v3`) and `api_key` are optional, and a token is recommended because the
+anonymous limit is 60 requests/hour against 5000 with one.
 
 ### Setup and management
 

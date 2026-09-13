@@ -32,6 +32,10 @@ for large investigations that keeps the host context clean.
   docs via Context7, faster and more accurate than grepping the open web.
 - **Web-LLM `ask` and long-doc `locate`** — `ask` gets a natural-language answer with citations
   from a web-enabled LLM; `locate` pins which sections of a 10k-line file matter before you read.
+- **GitHub answered by the API, not scraped** — `fetch` intercepts GitHub file and repo URLs
+  (`method: "github"`) and reads the REST API instead of rendering the page: exact file bytes, and
+  repo metadata plus a clean README. Works keyless (public files cost no API quota at all), and a
+  token unlocks 5000 req/h and private repos. `github file` / `github repo` are also standalone.
 - **Plugin providers** — adding a provider is one module plus one config entry; the registry
   auto-discovers it and it appears in `--help`. No router or CLI changes.
 - **Scriptable** — markdown on stdout by default (human/AI friendly, token-light); `--output json` for scripts and jq; semantic exit
@@ -139,6 +143,10 @@ research-assistant firecrawl scrape <url>...   # keyless markdown
 research-assistant ctx7 docs /org/repo "<q>"   # official docs via Context7
 research-assistant ask "<question>"            # web-LLM answer + citations
 
+# GitHub (reads the REST API instead of scraped HTML; fetch intercepts these URLs automatically)
+research-assistant github file <url>           # exact file bytes; a #L10-L20 fragment selects lines
+research-assistant github repo <url>           # repo metadata + README (2 API calls, key optional)
+
 # Long docs
 research-assistant locate <md_path> "<q>"      # anchor-based relevance scan
 
@@ -177,6 +185,11 @@ base_url = "https://api.openai.com/v1"  # default; for a compatible gateway, use
 api_key  = "..."
 model    = "grok-..."
 
+[[provider]]
+type     = "github"                 # optional: `github file` / `github repo` + fetch auto-intercept
+api_key  = "ghp_..."                # optional; omit = anonymous (60 req/h vs 5000 with a token)
+base_url = "https://api.github.com" # default; GitHub Enterprise needs https://HOST/api/v3
+
 [proxy]
 url = ""                            # empty = auto-detect system proxy
 
@@ -186,7 +199,8 @@ max_browser_instances = 3           # concurrent browser-process cap (cross-CLI)
 ```
 
 Unconfigured providers are simply skipped. `firecrawl scrape` / `search` and the browser source
-are keyless, so `search` and `fetch` work with an empty config.
+are keyless, so `search` and `fetch` work with an empty config. `github file` / `github repo` are
+keyless too (anonymous, 60 req/h), and `fetch` intercepts GitHub file/repo URLs before the API tier.
 
 ## How it works
 
