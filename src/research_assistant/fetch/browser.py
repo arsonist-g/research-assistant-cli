@@ -8,6 +8,10 @@ cookie（注一次），ThreadPoolExecutor 并发各 tab：导航 → cfbypass.s
 
 演进：去 headless（2026-07，统一 headed+CF auto-detect）；**回归真无头（2026-09-13，DEC-028：
 headless 唯一堵点是 UA 里的 "Headless" 标记，加 --user-agent 修复；弃用 headed+SW_HIDE）**；
+**自持调试端口与 per-call profile（2026-09-18，DEC-030）：弃 DrissionPage auto_port——它会把
+profile 路径改写到 %TEMP%/DrissionPage/autoPortData/<port>，让 per-call profile 形同虚设，且
+CDP 连不上时整棵浏览器进程树无人认领；改为本进程分配端口 + 按 profile 目录名认领进程树，
+见 _launch_page / _kill_profile_browsers**；
 多 tab（2026-07，原每 url 独立浏览器改 1 browser 多 tab 省内存）；网络静默等待（2026-07，
 替代 html 长度轮询，JS/API 加载更稳）。
 """
@@ -16,9 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import re
 import shutil
 import signal
+import socket
 import sys
 import time
 import uuid
@@ -38,6 +44,16 @@ logger = logging.getLogger("research_assistant.fetch.browser")
 
 # 孤儿判定：profile/锁 超过该秒数且属主进程已死 → 视为孤儿
 ORPHAN_AGE_SECONDS = 600
+
+# 杀完等进程退出：上限 + 轮询间隔（超时即返回，不干等）
+PID_EXIT_WAIT_SECONDS = 5.0
+PID_EXIT_POLL_SECONDS = 0.05
+
+# 调试端口区间（与 DrissionPage auto_port 默认区间一致）
+PORT_SCOPE = (9600, 59600)
+
+# Windows GetExitCodeProcess 的「仍在运行」取值
+_STILL_ACTIVE = 259
 
 
 # ---------------------------------------------------------------------------
@@ -174,10 +190,143 @@ def _kill_pid(pid: int) -> None:
         pass
 
 
+def _pid_running(pid: int) -> bool:
+    """pid 是否仍在运行（比 _pid_alive 严：已退出、但句柄还被别人拿着的进程算「不在了」）。
+
+    Windows 上进程退出后，只要有别人还持有它的进程句柄（如 subprocess._active 里未回收的
+    Popen），OpenProcess 依然成功 → 只看 _pid_alive 会把「已退出」误判成「还在跑」，等待必然
+    空转到上限。故再看 GetExitCodeProcess：不是 STILL_ACTIVE 即已退出。
+    Linux 看 /proc/<pid>/stat 的状态位：僵尸（已退出未回收）同样算「不在了」。
+    """
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == _STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    if sys.platform.startswith("linux"):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            return stat.rsplit(")", 1)[1].split()[0] != "Z"
+        except (OSError, IndexError):
+            return False
+    return _pid_alive(pid)
+
+
+def _wait_pid_gone(pid: int, timeout: float = PID_EXIT_WAIT_SECONDS) -> None:
+    """等 pid 真的退出，最多 timeout 秒（超时记日志返回，不干等）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_running(pid):
+            return
+        time.sleep(PID_EXIT_POLL_SECONDS)
+    logger.warning("等待进程 %d 退出超时（%.1fs），继续收尾", pid, timeout)
+
+
+def _iter_proc_processes() -> list[tuple[int, int, str]]:
+    """Linux：直接读 /proc（命令行按 NUL 分隔，天然不受换行影响）。"""
+    procs: list[tuple[int, int, str]] = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            args = (
+                (d / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+            )
+            ppid = int((d / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        procs.append((int(d.name), ppid, args))
+    return procs
+
+
+def _iter_processes() -> list[tuple[int, int, str]]:
+    """列出 (pid, 父 pid, 命令行)。Windows 走 CIM（PowerShell），Linux 走 /proc，其余 POSIX 走 ps。
+
+    只用于「按 profile 目录名认领浏览器进程」，取不到命令行的进程直接跳过；枚举本身失败返回
+    空表（调用方退化为「只删目录」，不因枚举失败中断收尾）。
+    命令行可能自带换行（如 `python -c "<多行脚本>"`），一条记录被拆成多行就会丢掉 pid，故
+    Windows 侧把它压成单行、Linux 侧走 NUL 分隔的 cmdline；其余 POSIX 平台走 ps（多行命令行
+    确实会漏，属已知边界，不影响单行命令行的浏览器进程）。
+    """
+    win = sys.platform.startswith("win")
+    if win:
+        script = (
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+            "Get-CimInstance Win32_Process | ForEach-Object "
+            "{ $c = $_.CommandLine; if ($c) { $c = $c -replace '[\\r\\n]+', ' ' }; "
+            "'{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, $c }"
+        )
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
+    elif Path("/proc").exists():
+        return _iter_proc_processes()
+    else:
+        cmd = ["ps", "-eo", "pid=,ppid=,args="]
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
+        )
+    except Exception as e:
+        logger.warning("枚举进程表失败（按 profile 清孤儿退化为只删目录）: %s", e)
+        return []
+    procs: list[tuple[int, int, str]] = []
+    for line in (out.stdout or "").splitlines():
+        parts = line.strip().split("|", 2) if win else line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            procs.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            continue
+    return procs
+
+
+def _profile_browser_pids(profile_name: str) -> list[int]:
+    """命令行引用该 profile 目录名的进程，只返回根进程（其父不在匹配集里）。
+
+    浏览器进程树里只有根进程带 `--user-data-dir=<profile 目录>`，故通常只匹配到根；只对根做
+    `/T` 树杀，避免对同一棵树重复下杀。
+    """
+    if not profile_name:
+        return []
+    matched = {pid: ppid for pid, ppid, cmd in _iter_processes() if profile_name in cmd}
+    return sorted(pid for pid, ppid in matched.items() if ppid not in matched)
+
+
+def _kill_profile_browsers(profile_name: str) -> int:
+    """杀掉命令行引用该 profile 目录名的浏览器进程树，返回根进程数。"""
+    pids = _profile_browser_pids(profile_name)
+    for pid in pids:
+        _kill_pid(pid)
+    return len(pids)
+
+
 def cleanup_orphans() -> int:
     """扫描 profile 目录，清理孤儿（属主进程已死 且 超过 ORPHAN_AGE_SECONDS）。
 
     搬 cdt 三件套之"启动前孤儿清理"——崩溃后下次 fetch 自愈。返回清理数量。
+    删目录前先按 profile 目录名杀掉引用它的浏览器进程树：profile 的属主标记里记的是属主 CLI 的
+    pid，属主已死时该 pid 可能已被系统复用，照它 taskkill 会误杀无关进程树；而浏览器进程的 pid
+    从未落盘。
     """
     base = config_mod.profiles_dir()
     if not base.exists():
@@ -195,6 +344,7 @@ def cleanup_orphans() -> int:
             except OSError:
                 continue
             if age > ORPHAN_AGE_SECONDS:
+                _kill_profile_browsers(d.name)
                 _safe_rmtree(d)
                 reaped += 1
             continue
@@ -204,7 +354,7 @@ def cleanup_orphans() -> int:
             continue
         # 属主已死：若已超期则清理（刚崩的给一点宽限，避免误伤正在退出的）
         if (now - started) > ORPHAN_AGE_SECONDS:
-            _kill_pid(pid)
+            _kill_profile_browsers(d.name)
             _safe_rmtree(d)
             reaped += 1
     return reaped
@@ -230,7 +380,11 @@ def _browser_locks_dir() -> Path:
 
 
 def cleanup_browser_locks() -> int:
-    """清 .browser-locks/ 下死 PID 锁（崩溃自愈，复用 _pid_alive/_kill_pid）。返回清理数。"""
+    """清 .browser-locks/ 下死 PID 锁（崩溃自愈）。返回清理数。
+
+    只删锁目录、不发 taskkill：锁里记的是属主 CLI 的 pid，已死时该 pid 可能已被系统复用，
+    taskkill 会误杀无关进程树（真正要清的浏览器进程按 profile 目录名认领，见 cleanup_orphans）。
+    """
     base = _browser_locks_dir()
     now = int(time.time())
     reaped = 0
@@ -244,7 +398,6 @@ def cleanup_browser_locks() -> int:
         if _pid_alive(pid):
             continue
         if (now - started) > ORPHAN_AGE_SECONDS:
-            _kill_pid(pid)
             _safe_rmtree(d)
             reaped += 1
     return reaped
@@ -374,6 +527,24 @@ def _native_user_agent(exe: str | None, channel: str) -> str | None:
     return ua
 
 
+def _alloc_port() -> int:
+    """在 127.0.0.1 上取一个空闲调试端口（9600–59600，逐次随机）。
+
+    端口由本进程分配而非交给 DrissionPage auto_port：auto_port 为真时 handle_options 会把
+    profile 路径一并改写到 %TEMP%/DrissionPage/autoPortData/<port>，set_user_data_path 形同虚设。
+    分配后到浏览器 bind 前仍有极小竞态（被抢占即 CDP 连不上，失败当刻清理，不泄漏）。
+    """
+    for _ in range(100):
+        port = random.randint(*PORT_SCOPE)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        return port
+    raise ResearchAssistantError("无法分配浏览器调试端口（连续 100 次都被占用）")
+
+
 def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     """构造 DrissionPage ChromiumOptions：用户 Edge + 隔离 profile + 真无头 + 反检测/防弹窗 args。
 
@@ -382,6 +553,8 @@ def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     并用 --screen-info 让虚拟屏尺寸与窗口一致（消掉 headless 默认 800x600 的几何特征）。
     DrissionPage 直接 CDP 驱动用户 Edge，不经自动化框架运行时，无 playwright 注入痕迹。
     防弹窗照 cdt 配方（launch args + 后续 _write_suppress_prefs 的 Preferences 双保险）。
+    端口自持（见 _alloc_port）：一旦开 auto_port，DrissionPage 会连 profile 路径一起改写，本机
+    防弹窗 Preferences 写进没人读的目录、%TEMP% 还会堆一份完整 Edge profile。
     """
     from DrissionPage import ChromiumOptions
 
@@ -390,7 +563,7 @@ def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     co.set_browser_path(exe)
     co.set_user_data_path(str(profile_dir))
     co.headless(True)  # DrissionPage 4.1.1.4：True → --headless=new
-    co.auto_port(True)
+    co.set_local_port(_alloc_port())
     w, h = cfbypass.REAL_VIEWPORT["width"], cfbypass.REAL_VIEWPORT["height"]
     co.set_argument(f"--window-size={w},{h}")
     # 虚拟屏与窗口同尺寸（Chrome 142+ / Edge 152 支持；更老 Chromium 忽略未知开关）：
@@ -417,6 +590,24 @@ def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     if proxy_url:
         co.set_argument(f"--proxy-server={proxy_url}")
     return co
+
+
+def _launch_page(config: Config, profile_dir: Path) -> tuple[Any, int]:
+    """启动浏览器，返回 (page, browser_pid)。三个启动点统一走这里（fetch 单 url / 多 tab / search）。
+
+    构造抛错时浏览器进程可能已经起来了：DrissionPage 先 spawn 进程、再连 CDP，连不上才抛
+    BrowserConnectError，而此刻调用方拿不到 page、也没有 pid → finally 里的 _close_browser
+    无从下手，整棵进程树就此永久存活。故这里按 profile 目录名认领已起的进程树杀掉，再原样抛出。
+    """
+    from DrissionPage import ChromiumPage
+
+    try:
+        page = ChromiumPage(_build_dp_options(config, profile_dir))
+    except Exception:
+        _kill_profile_browsers(profile_dir.name)
+        raise
+    browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
+    return page, browser_pid
 
 
 def _inject_cookies_dp(page: Any, cookies: list[dict[str, Any]]) -> None:
@@ -498,6 +689,7 @@ def _close_browser(page: Any, browser_pid: int) -> None:
     page.quit()（force=True 默认，杀 browser 进程）+ 兜底按 pid 杀进程树——防 quit 不彻底时
     Edge 进程残留致窗口不关 + profile 文件锁不释放（Windows 下 rmtree 会因锁失败，profile 堆积）。
     page 为 None（ChromiumPage 构造失败）时跳过 quit；对已退出的 pid 杀无害。
+    杀完再等 pid 真的消失（有上限）：taskkill 返回 ≠ 文件锁已释放，不等则紧接着的 rmtree 撞锁。
     """
     if page is not None:
         try:
@@ -506,6 +698,7 @@ def _close_browser(page: Any, browser_pid: int) -> None:
             logger.debug("page.quit() 异常: %s", e)
     if browser_pid:
         _kill_pid(browser_pid)
+        _wait_pid_gone(browser_pid)
 
 
 # ---------------------------------------------------------------------------
@@ -591,16 +784,13 @@ def _fetch_one_tab(tab: Any, url: str, fmt: str = "markdown") -> str | None:
 
 def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown") -> str | None:
     """单 url 同步：建 1 browser + tab0，hide + 注 cookie，_fetch_one_tab(tab0)，关 browser。"""
-    from DrissionPage import ChromiumPage
-
     profile_dir = _new_profile_dir()
     lock_dir = _acquire_browser_slot(config)
     page = None
     browser_pid = 0
     try:
         _write_suppress_prefs(profile_dir)
-        page = ChromiumPage(_build_dp_options(config, profile_dir))
-        browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
+        page, browser_pid = _launch_page(config, profile_dir)
         _inject_cookies_dp(page, cookies)
         return _fetch_one_tab(page, url, fmt)  # page(ChromiumPage)即 tab0，可直接喂 _fetch_one_tab
     finally:
@@ -635,8 +825,6 @@ def _fetch_all_tabs_sync(
     _close_browser（杀 browser PID，让残余 worker 的 CDP 断开抛异常退出），再 shutdown 线程池，
     避免 shutdown 干等残余 worker（Python 线程不能 kill，但杀进程能连带解阻塞）。
     """
-    from DrissionPage import ChromiumPage
-
     profile_dir = _new_profile_dir()
     lock_dir = _acquire_browser_slot(config)
     page = None
@@ -644,8 +832,7 @@ def _fetch_all_tabs_sync(
     ex: ThreadPoolExecutor | None = None
     try:
         _write_suppress_prefs(profile_dir)
-        page = ChromiumPage(_build_dp_options(config, profile_dir))
-        browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
+        page, browser_pid = _launch_page(config, profile_dir)
         _inject_cookies_dp(page, cookies)  # 注一次，所有 tab 共享
 
         # 主线程：预建 tab。tab0(page) 给第 1 个 url；其余 new_tab(background) 空 tab。

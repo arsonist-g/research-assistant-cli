@@ -6,7 +6,11 @@
 
 验证 browser 平台端到端：
   - browser search：关键词进 → results 非空，url 是真实目标（非 bing /ck/a 跳转）。
-  - browser fetch：grok.com（CF 挑战 + SPA）→ 落盘 md 非空，不含 CF 挑战特征。
+  - browser fetch per-future 超时：短 timeout + 慢页面 → 必在预算内返回（finally 杀 PID + shutdown 生效）。
+  - browser fetch 的进程/profile 收尾（DEC-030）：取回内容；不在 %TEMP%\\DrissionPage\\autoPortData
+    新增目录；无命令行引用 profiles 根的浏览器进程残留；per-call profile 目录已删。
+
+CF（Cloudflare 盾）绕过不在此文件验证：见 tests/test_cf_live.py（nopecha 5 秒盾 + Turnstile，marker live_cf）。
 
 依赖：DrissionPage 已装、本地 Edge/Chromium 可执行、外网可达。
 注意：browser fetch 与 browser search 都是 headless（DEC-028，不弹浏览器窗口）。
@@ -14,10 +18,17 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
 import pytest
 
 pytestmark = [pytest.mark.live_browser]
 
+from research_assistant import config as config_mod
 from research_assistant.config import Config
 from research_assistant.fetch import fetch_with_browser
 from research_assistant.fetch import search_engine as se
@@ -48,17 +59,6 @@ async def test_search_returns_real_urls():
         assert r["title"], r
 
 
-async def test_fetch_passes_cf_and_returns_content():
-    """browser fetch：grok.com（CF + SPA）应取回非空、非挑战页正文。"""
-    _skip_if_unusable()
-    url = "https://grok.com/release-notes"
-    raw = await fetch_with_browser(_cfg(), [url], login=False, concurrency=1)
-    md = raw.get(url)
-    assert md, f"fetch 返回空: {url}"
-    assert "just a moment" not in md.lower(), "内容仍含 CF 挑战特征，疑似被拦"
-    assert "release" in md.lower() or "grok" in md.lower(), f"正文不含预期关键词: {url}"
-
-
 async def test_fetch_timeout_aborts_within_budget():
     """短 timeout + 慢页面：fetch_with_browser 必在合理时间内返回，证明 finally 杀 PID + shutdown 清理生效。
 
@@ -74,3 +74,63 @@ async def test_fetch_timeout_aborts_within_budget():
     assert elapsed < 25, (
         f"fetch 用了 {elapsed:.1f}s，疑似 finally 杀 PID + shutdown 清理失效（残余 worker 干等）"
     )
+
+
+# ---------------------------------------------------------------------------
+# DEC-030：真浏览器跑完不留 %TEMP% 影子 profile、不留浏览器进程、不留 per-call profile 目录
+# ---------------------------------------------------------------------------
+
+
+def _dir_names(root: Path) -> set:
+    """root 下的子目录名集合（root 不存在 → 空集）。"""
+    if not root.exists():
+        return set()
+    return {p.name for p in root.iterdir() if p.is_dir()}
+
+
+def _cmdlines_containing(needle: str) -> list:
+    """独立实现（不调用被测代码）：列出命令行含 needle 的进程。Windows 走 CIM，POSIX 走 ps。"""
+    if sys.platform.startswith("win"):
+        # needle 走环境变量、不进命令行：否则这条 PowerShell 自己的命令行也含 needle，会自命中。
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:RA_PROBE_NEEDLE) } | "
+            'ForEach-Object { "{0} {1}" -f $_.ProcessId, $_.Name }'
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "RA_PROBE_NEEDLE": needle},
+        )
+    else:
+        out = subprocess.run(
+            ["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=30
+        )
+        return [line.strip() for line in out.stdout.splitlines() if needle in line]
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+
+
+async def test_fetch_uses_per_call_profile_and_leaves_no_orphan(home):
+    """DEC-030 端到端：一次真实 fetch 后 ① 取回内容；② %TEMP%\\DrissionPage\\autoPortData 不新增目录
+    （修前 auto_port 会把真实 profile 改写到那里）；③ 无命令行引用 profiles 根的浏览器进程残留；
+    ④ per-call profile 目录已删。
+    """
+    _skip_if_unusable()
+    url = "https://example.com/"
+    profiles_root = config_mod.profiles_dir()
+    auto_port_root = Path(tempfile.gettempdir()) / "DrissionPage" / "autoPortData"
+    auto_port_before = _dir_names(auto_port_root)
+
+    raw = await fetch_with_browser(_cfg(), [url], login=False, concurrency=1)
+
+    md = raw.get(url)
+    assert md, f"fetch 返回空: {url}"  # ①
+
+    new_dirs = _dir_names(auto_port_root) - auto_port_before
+    assert not new_dirs, f"仍在 %TEMP% 留 DrissionPage auto_port profile: {sorted(new_dirs)}"  # ②
+
+    leftovers = _cmdlines_containing(str(profiles_root))
+    assert not leftovers, "有浏览器进程残留并引用 profiles 根:\n" + "\n".join(leftovers)  # ③
+
+    leftover_dirs = sorted(p.name for p in profiles_root.iterdir()) if profiles_root.exists() else []
+    assert leftover_dirs == [], f"per-call profile 目录未删: {leftover_dirs}"  # ④

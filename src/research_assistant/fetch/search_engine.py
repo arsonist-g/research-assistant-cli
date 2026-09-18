@@ -29,9 +29,9 @@ from ..errors import ArgsError, ResearchAssistantError
 from . import cfbypass
 from .browser import (
     _acquire_browser_slot,
-    _build_dp_options,
     _channel_executable,
     _close_browser,
+    _launch_page,
     _new_profile_dir,
     _release_browser_slot,
     _safe_rmtree,
@@ -209,8 +209,6 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
         raise ResearchAssistantError(
             f"未找到本地浏览器 ({config.browser.channel})，搜索引擎不可用"
         )
-    from DrissionPage import ChromiumPage
-
     deadline = time.monotonic() + timeout  # 整体超时：超时退出翻页，返回已收集的
     profile_dir = _new_profile_dir()
     lock_dir = _acquire_browser_slot(config)
@@ -240,8 +238,7 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
 
     try:
         _write_suppress_prefs(profile_dir)
-        page = ChromiumPage(_build_dp_options(config, profile_dir))
-        browser_pid = getattr(getattr(page, "browser", None), "process_id", 0) or 0
+        page, browser_pid = _launch_page(config, profile_dir)
         logger.info(
             "搜索引擎(%s) headless 多 tab(%s)，query=%r limit=%d max_pages=%d",
             engine, config.browser.channel, query, limit, max_pages,
