@@ -99,11 +99,14 @@ research-assistant permissions install
 
 `fetch` can reuse the login state of your **daily** browser, so pages behind a login come back
 without re-entering credentials. The bridge is a Manifest V3 extension the CLI keeps at
-`~/.research-assistant/extension/` (`--install-skills` and `skills update` copy it there):
+`~/.research-assistant/extension/` (`--install-skills` and `skills update` copy it there). You can also
+download the extension-only zip from [GitHub Releases](https://github.com/arsonist-g/research-assistant-cli/releases),
+unzip it, and load that folder without cloning the repository:
 
 1. Open `edge://extensions` (or `chrome://extensions`) in the profile you actually browse with,
    and turn on **Developer mode**.
-2. Choose **Load unpacked** and select `~/.research-assistant/extension/`.
+2. Choose **Load unpacked** and select `~/.research-assistant/extension/`, or the folder where you
+   unzipped the release package.
 3. Confirm with `research-assistant doctor` — its daemon line reports the extension as connected
    (`extConnected=True`) once the bridge attaches. The daemon is started on demand, so run one
    `fetch` first if it reads as offline.

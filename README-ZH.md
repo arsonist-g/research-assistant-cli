@@ -93,10 +93,10 @@ CLI 把它放在：
 ~/.research-assistant/extension/
 ```
 
-（`--install-skills` 与 `skills update` 会把它复制到那里。）在你日常使用的 Edge / Chrome 配置里装一次：
+（`--install-skills` 与 `skills update` 会把它复制到那里。）也可以从 [GitHub Releases](https://github.com/arsonist-g/research-assistant-cli/releases) 下载仅含扩展的 zip，解压后加载其中的目录，不需要克隆源码仓库。在你日常使用的 Edge / Chrome 配置里装一次：
 
 1. 打开 `edge://extensions`（或 `chrome://extensions`），打开右上角**开发者模式**。
-2. 点**加载解压缩的扩展**，选择 `~/.research-assistant/extension/`。
+2. 点**加载解压缩的扩展**，选择上面的 `~/.research-assistant/extension/`，或 Release zip 的解压目录。
 3. 用 `research-assistant doctor` 确认——扩展连上后其 daemon 行会显示 `extConnected=True`。
    daemon 是按需拉起的，若显示离线先跑一次 `fetch`。
 
