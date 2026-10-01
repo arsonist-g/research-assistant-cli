@@ -82,11 +82,11 @@ research-assistant skills status  --targets all   # missing / stale / up-to-date
 |---|---|---|
 | `claude` | `~/.claude/skills/research-assistant/SKILL.md` | `~/.claude/agents/researcher.md` |
 | `cursor` | `~/.cursor/skills/research-assistant/SKILL.md` | `~/.cursor/agents/researcher.md` |
-| `codex` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
+| `codex` | `~/.codex/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
 | `pidesktop` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.agents/subagents/researcher.md` |
 | `hermes` | `~/.hermes/skills/research-assistant/SKILL.md` | — (persona folded into the skill) |
 
-Codex and PI-Desktop share `~/.agents/skills/`. Pass individual targets instead of `all`
+Codex uses its dedicated `~/.codex/skills/`; PI-Desktop uses `~/.agents/skills/`. Pass individual targets instead of `all`
 (`--targets claude,codex`), and `--skills-root PATH` to install under a different root.
 
 To also stop the per-call approval prompts:

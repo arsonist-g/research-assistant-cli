@@ -6,8 +6,8 @@ managed skill 文件（SKILL.md）相对通用；managed agent 定义因家而�
     Codex                        → toml
     Hermes                       → 无独立文件（researcher 人设融入 skill）
 
-PI-Desktop 的 host-core 把 AGENTS_DIR 硬编码为 `.agents`，与 Codex 家共用同一根目录：
-skill 落点相同，只有 agent 文件不同（`.agents/subagents/researcher.md`）。
+Codex 使用专用技能目录 `.codex/skills/`，PI-Desktop 的 host-core 则把 AGENTS_DIR 硬编码为 `.agents`；
+两家的 skill 落点彼此独立。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ ALL_FAMILIES: dict[str, Family] = {
     "codex": Family(
         name="codex",
         label="Codex",
-        skill_relative=f".agents/skills/{SKILL_NAME}",  # ~/.agents/skills/（~/.codex/skills deprecated）
+        skill_relative=f".codex/skills/{SKILL_NAME}",  # ~/.codex/skills/（Codex 专用目录）
         agent_relative=".codex/agents/researcher.toml",
         agent_format="toml",
         agent_support="static",
@@ -69,7 +69,7 @@ ALL_FAMILIES: dict[str, Family] = {
     "pidesktop": Family(
         name="pidesktop",
         label="PI-Desktop",
-        skill_relative=f".agents/skills/{SKILL_NAME}",  # 与 codex 家同目录（~/.agents/）
+        skill_relative=f".agents/skills/{SKILL_NAME}",  # PI-Desktop 专用入口（~/.agents/）
         agent_relative=".agents/subagents/researcher.md",
         agent_format="md",
         agent_support="static",

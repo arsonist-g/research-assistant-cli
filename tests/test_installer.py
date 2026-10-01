@@ -34,9 +34,10 @@ class TestTargetsMatrix:
         assert ALL_FAMILIES["hermes"].agent_relative is None
         assert ALL_FAMILIES["hermes"].agent_support == "runtime"
 
-    def test_pidesktop_shares_skill_dir_with_codex(self):
-        """PI-Desktop 的 host-core 硬编码 AGENTS_DIR=".agents"，与 codex 家同根。"""
-        assert ALL_FAMILIES["pidesktop"].skill_relative == ALL_FAMILIES["codex"].skill_relative
+    def test_codex_and_pidesktop_have_distinct_skill_dirs(self):
+        """Codex 走专用目录；PI-Desktop 的 host-core 仍硬编码 AGENTS_DIR=".agents"。"""
+        assert ALL_FAMILIES["codex"].skill_relative == ".codex/skills/research-assistant"
+        assert ALL_FAMILIES["pidesktop"].skill_relative == ".agents/skills/research-assistant"
         assert ALL_FAMILIES["pidesktop"].agent_relative == ".agents/subagents/researcher.md"
 
     def test_skill_name_constants(self):
@@ -172,7 +173,9 @@ class TestInstallAndStatus:
         assert claude_skill.exists()
         assert claude_agent.exists()
         # Codex：skill + agent(toml)
+        codex_skill = tmp_path / ".codex/skills/research-assistant/SKILL.md"
         codex_agent = tmp_path / ".codex/agents/researcher.toml"
+        assert codex_skill.exists()
         assert codex_agent.exists()
 
     def test_hermes_installs_only_skill(self, tmp_path):

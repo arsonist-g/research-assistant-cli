@@ -71,11 +71,11 @@ research-assistant skills status  --targets all   # missing / stale / up-to-date
 |---|---|---|
 | `claude` | `~/.claude/skills/research-assistant/SKILL.md` | `~/.claude/agents/researcher.md` |
 | `cursor` | `~/.cursor/skills/research-assistant/SKILL.md` | `~/.cursor/agents/researcher.md` |
-| `codex` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
+| `codex` | `~/.codex/skills/research-assistant/SKILL.md` | `~/.codex/agents/researcher.toml` |
 | `pidesktop` | `~/.agents/skills/research-assistant/SKILL.md` | `~/.agents/subagents/researcher.md` |
 | `hermes` | `~/.hermes/skills/research-assistant/SKILL.md` | —（人设并入 skill） |
 
-Codex 与 PI-Desktop 共用 `~/.agents/skills/`。可以只装指定平台（`--targets claude,codex`），
+Codex 使用专用 `~/.codex/skills/`；PI-Desktop 使用 `~/.agents/skills/`。可以只装指定平台（`--targets claude,codex`），
 用 `--skills-root PATH` 换安装根目录。
 
 要让 agent 调本 CLI 不再逐次弹审批：
