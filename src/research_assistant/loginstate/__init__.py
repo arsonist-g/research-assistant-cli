@@ -5,6 +5,18 @@
 - fetch 启动时取 cookie，add_cookies 注入隔离 profile（避 lock）。
 """
 
-from .daemonctl import daemon_status, ensure_daemon, get_cookies, to_playwright_cookies
+from .daemonctl import (
+    daemon_status,
+    ensure_daemon,
+    get_cookies,
+    get_login_state,
+    to_playwright_cookies,
+)
 
-__all__ = ["daemon_status", "ensure_daemon", "get_cookies", "to_playwright_cookies"]
+__all__ = [
+    "daemon_status",
+    "ensure_daemon",
+    "get_cookies",
+    "get_login_state",
+    "to_playwright_cookies",
+]

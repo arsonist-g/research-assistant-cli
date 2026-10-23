@@ -32,6 +32,29 @@ class TestResolveProxyPriority:
         assert proxy.resolve_proxy("http://config:1080") == ""
 
 
+class TestLocalNoProxy:
+    def test_adds_loopback_hosts(self, monkeypatch):
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        value = proxy.ensure_local_no_proxy()
+        parts = value.split(",")
+        for host in ("127.0.0.1", "localhost", "::1"):
+            assert host in parts
+        # 大小写两份都写，兼容读不同拼写的库
+        import os
+        assert os.environ["NO_PROXY"] == value
+        assert os.environ["no_proxy"] == value
+
+    def test_keeps_existing_entries_and_dedups(self, monkeypatch):
+        # Windows 的 os.environ 大小写不敏感：只设 NO_PROXY，不要再 delenv("no_proxy")，
+        # 那会把同一个变量删掉。
+        monkeypatch.setenv("NO_PROXY", "example.com, 127.0.0.1")
+        parts = proxy.ensure_local_no_proxy().split(",")
+        assert "example.com" in parts
+        assert parts.count("127.0.0.1") == 1
+        assert "localhost" in parts and "::1" in parts
+
+
 class TestSetOverride:
     def test_set_override_strips_whitespace(self):
         proxy.set_override("  http://x:1  ")
@@ -46,3 +69,13 @@ class TestSetOverride:
         proxy.set_override("http://x:1")
         proxy.set_override("")
         assert proxy._override is None
+
+    def test_forced_direct_only_for_none_sentinel(self):
+        proxy.set_override("none")
+        assert proxy.forced_direct() is True
+        proxy.set_override("NONE")
+        assert proxy.forced_direct() is True
+        proxy.set_override("http://x:1")
+        assert proxy.forced_direct() is False
+        proxy.set_override(None)
+        assert proxy.forced_direct() is False

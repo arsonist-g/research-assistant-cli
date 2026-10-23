@@ -26,8 +26,9 @@ for large investigations that keeps the host context clean.
 - **One browser, many tabs** — fetching N URLs opens one browser process with N tabs, not N
   browsers. Search paginates concurrently with smart page-count inference; a cross-process
   instance cap prevents runaway browsers.
-- **Login cookies bridged** — a bundled MV3 extension pipes your daily browser's login cookies
-  into fetch, so logged-in pages work without re-entering credentials.
+- **Login state bridged** — a bundled MV3 extension pipes your daily browser's login cookies **and
+  page Web Storage** (localStorage / sessionStorage) into fetch, so logged-in pages work without
+  re-entering credentials — including sites that keep the session token outside cookies.
 - **Official docs from the source** — `ctx7 docs` returns up-to-date library / SDK / CLI / cloud
   docs via Context7, faster and more accurate than grepping the open web.
 - **Web-LLM `ask` and long-doc `locate`** — `ask` gets a natural-language answer with citations
@@ -36,11 +37,64 @@ for large investigations that keeps the host context clean.
   (`method: "github"`) and reads the REST API instead of rendering the page: exact file bytes, and
   repo metadata plus a clean README. Works keyless (public files cost no API quota at all), and a
   token unlocks 5000 req/h and private repos. `github file` / `github repo` are also standalone.
+- **Site rules are your data, not our code** — rules live in `~/.research-assistant/rules/*.toml`
+  and are maintained by you; the package ships none. A rule matches a URL, rewrites it to the
+  site's stable data endpoint (append `.json`, add a parameter, switch a host), and names a
+  response adapter (`discourse_topic`, `json_path`, `css_extract`, `html_article`) plus optional
+  HTML preprocessors (`strip_hidden_nodes`, `remove_selectors`). A site change is a rule-file edit,
+  not a commit to this project. `rules validate/list/explain/test` keep rules honest; a failed rule
+  always falls back to the normal chain.
+- **Bing international, even on a CN network** — browser search always requests `www.bing.com`;
+  when the network 302s to `cn.bing.com`, it retries with `ensearch=1` (Bing's international-results
+  switch) instead of accepting the polluted domestic result set. `bing-cn` remains only as a
+  compatibility alias.
 - **Plugin providers** — adding a provider is one module plus one config entry; the registry
   auto-discovers it and it appears in `--help`. No router or CLI changes.
 - **Scriptable** — markdown on stdout by default (human/AI friendly, token-light); `--output json` for scripts and jq; semantic exit
   codes (`0` ok · `1` internal · `2` args · `3` config · `4` network · `5` antibot). Installs as
   a skill into Claude Code, Codex, and friends.
+
+## Site rules
+
+Rules are **user-maintained data**, not part of this package. Put TOML files in
+`~/.research-assistant/rules/` (or the platform equivalent); a rule only describes the URL layer:
+
+```toml
+schema = 1
+
+[[rule]]
+id = "discourse-linuxdo-topic"
+hosts = ["linux.do", "www.linux.do"]
+path_patterns = [
+  '^/t/(?P<id>\d+)(?:/(?P<post>\d+))?(?:\.json)?/?$',
+  '^/t/[^/]+/(?P<id>\d+)(?:/(?P<post>\d+))?(?:\.json)?/?$',
+]
+transport = "browser"                  # browser | http | html (preprocess only)
+request = "https://{host}/t/topic/{id}.json"
+parser = "discourse_topic"             # response adapter
+preprocess = [{ name = "strip_hidden_nodes" }]
+```
+
+- **URL layer**: `hosts` / `host_patterns`, `path_patterns` (named groups), `request` template,
+  `transport` (`browser`/`http` rewrite and fetch; `html` only preprocesses the page, `request` is
+  ignored), `login`, `headers`, `allow_cross_host`.
+- **Response adapters** (code capabilities referenced by name): `discourse_topic` (Discourse JSON),
+  `json_path` (simple JSON field mapping), `css_extract` (CSS selectors), `html_article` (default
+  trafilatura extraction).
+- **HTML preprocessors** (code capabilities referenced by name): `strip_hidden_nodes` (invisible
+  decoy text), `remove_selectors` (drop nodes by CSS selector).
+
+Inspect and test them offline:
+
+```sh
+research-assistant rules validate
+research-assistant rules list
+research-assistant rules explain "https://linux.do/t/topic/3066000/1"
+research-assistant rules test
+```
+
+`fetch` reports `method: "rule"` + `rule: "<id>"`. If a rule does not match, fails, or its adapter
+cannot parse the response, `fetch` falls back to the normal API/browser chain.
 
 ## Install
 
@@ -152,6 +206,12 @@ research-assistant github repo <url>           # repo metadata + README (2 API c
 
 # Long docs
 research-assistant locate <md_path> "<q>"      # anchor-based relevance scan
+
+# Site rules (user-maintained TOML in ~/.research-assistant/rules/; none ship in the package)
+research-assistant rules validate              # schema / regex / adapter / template checks
+research-assistant rules list                  # loaded rules, sources, priority
+research-assistant rules explain "<url>"       # which rule matches and what it will request
+research-assistant rules test [--rule ID]      # offline fixtures
 
 # Management
 research-assistant setup                       # configure + install skill/agent

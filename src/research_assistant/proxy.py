@@ -15,11 +15,39 @@ from urllib.request import getproxies
 # CLI --proxy 优先级最高，进程内缓存
 _override: str | None = None
 
+# 本机回环地址：CDP / daemon 的 ws/http 必须直连，不能交给代理
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def ensure_local_no_proxy() -> str:
+    """把本机回环地址补进 NO_PROXY，返回最终值。
+
+    DrissionPage 用 websocket-client 连 `ws://127.0.0.1:<调试端口>`；websocket-client 默认读
+    环境里的 http_proxy/HTTPS_PROXY。若代理变量残留（代理开着时启动、之后关掉），本机连接会被
+    发给代理，表现为「浏览器未开启或已关闭」。保留用户原有 NO_PROXY 条目，只补回环地址。
+    """
+    existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    for host in _LOOPBACK_HOSTS:
+        if host not in parts:
+            parts.append(host)
+    value = ",".join(parts)
+    # 某些库读小写、某些读大写；两个都写上，避免行为随库而异
+    os.environ["NO_PROXY"] = value
+    os.environ["no_proxy"] = value
+    return value
+
 
 def set_override(url: str | None) -> None:
     """设置本次 CLI 调用的代理覆盖（--proxy flag，横切）。"""
     global _override
     _override = url.strip() if url else None
+
+
+def forced_direct() -> bool:
+    """CLI 是否显式要求直连（--proxy none）。浏览器需要据此加 --no-proxy-server：
+    Chromium 在没有 --proxy-server 时会退回系统代理，「不传代理」不等于「直连」。"""
+    return _override is not None and _override.lower() == "none"
 
 
 def detect_system_proxy() -> str:

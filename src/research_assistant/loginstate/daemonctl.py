@@ -80,8 +80,14 @@ def _spawn_daemon(config: Any) -> None:
         )
 
 
-async def get_cookies(config: Any, *, ensure: bool = True, timeout: float = 12.0) -> list[dict[str, Any]]:
-    """从 daemon 取明文 cookie 列表（扩展推送的）。"""
+async def get_login_state(
+    config: Any, *, ensure: bool = True, timeout: float = 12.0
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """从 daemon 取明文 cookie 列表 + Web Storage（扩展推送的）。
+
+    返回 `(cookies, storage)`；storage 形状 `{origins: {origin: {l:{}, s:{}}}, ...}`。
+    扩展不支持 storage 时返回 `({}, ...)` 的空 origins。
+    """
     if ensure:
         if not await ensure_daemon(config):
             raise RuntimeError("cookie daemon 无法启动")
@@ -94,9 +100,15 @@ async def get_cookies(config: Any, *, ensure: bool = True, timeout: float = 12.0
                     body = await resp.text()
                     raise RuntimeError(f"daemon /cookies 返回 {resp.status}: {body}")
                 data = await resp.json()
-                return data.get("data") or []
+                return data.get("data") or [], data.get("storage") or {}
     except aiohttp.ClientConnectorError as e:
         raise RuntimeError(f"cookie daemon 不可达（{e}）") from e
+
+
+async def get_cookies(config: Any, *, ensure: bool = True, timeout: float = 12.0) -> list[dict[str, Any]]:
+    """从 daemon 取明文 cookie 列表（兼容入口；需要 Web Storage 用 get_login_state）。"""
+    cookies, _ = await get_login_state(config, ensure=ensure, timeout=timeout)
+    return cookies
 
 
 def to_playwright_cookies(cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:

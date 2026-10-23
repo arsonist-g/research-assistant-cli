@@ -43,14 +43,14 @@ class BrowserProvider(Provider):
             ),
             Capability(
                 name="search",
-                help="Headless search-engine search (default bing-intl; bing-cn|bing-intl|google).",
+                help="Headless search-engine search (Bing international or Google; bing-cn is a legacy alias).",
                 args=[
                     ArgSpec(["query"], kind="positional", metavar="QUERY", help="Search query."),
                     ArgSpec(
                         ["--engine"],
                         choices=["bing-cn", "bing-intl", "google"],
                         default="bing-intl",
-                        help="Search engine (default bing-intl; intl avoids CN-sensitive-word filtering).",
+                        help="Search engine (default bing-intl; bing-cn is a legacy alias for bing-intl).",
                     ),
                     ArgSpec(["--limit"], type=int, default=10, help="Min results to collect (default 10)."),
                     ArgSpec(["--max-pages"], type=int, default=10, help="Max pages to paginate (default 10; engine may offer fewer)."),

@@ -40,8 +40,31 @@ def test_engine_url_bing_intl():
     assert se._engine_url("bing-intl", "python asyncio") == "https://www.bing.com/search?q=python+asyncio"
 
 
-def test_engine_url_bing_cn():
-    assert se._engine_url("bing-cn", "rust") == "https://cn.bing.com/search?q=rust"
+def test_engine_url_bing_cn_is_legacy_alias_for_intl():
+    """bing-cn 保留为兼容别名，但不再请求国内站（cn.bing.com 结果污染重）。"""
+    assert se._engine_url("bing-cn", "rust") == "https://www.bing.com/search?q=rust"
+
+
+def test_is_cn_bing():
+    assert se._is_cn_bing("https://cn.bing.com/search?q=x")
+    assert se._is_cn_bing("https://www.cn.bing.com/search?q=x")
+    assert not se._is_cn_bing("https://www.bing.com/search?q=x")
+    assert not se._is_cn_bing("not a url")
+
+
+def test_with_ensearch_preserves_query_and_is_idempotent():
+    """重定向到 cn.bing.com 后追加 ensearch=1；已有参数保留，重复调用不叠加。"""
+    once = se._with_ensearch("https://cn.bing.com/search?q=rust&first=11")
+    assert "q=rust" in once and "first=11" in once
+    assert "ensearch=1" in once
+    twice = se._with_ensearch(once)
+    assert twice == once
+
+
+def test_with_ensearch_keeps_existing_value():
+    url = se._with_ensearch("https://cn.bing.com/search?q=x&ensearch=0")
+    assert "ensearch=0" in url
+    assert url.count("ensearch=") == 1
 
 
 def test_engine_url_encodes_special_chars():

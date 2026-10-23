@@ -15,18 +15,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def write_snapshot(url: str, method: str, md: str, write_path: str | None) -> str:
+def write_snapshot(
+    url: str, method: str, md: str, write_path: str | None,
+    extra: dict[str, str] | None = None,
+) -> str:
     """落盘网页副本（只写快照，不覆盖既有文件之外的状态）。返回写入路径。
 
     write_path 给定 → 写到该路径（父目录自动创建）；
     否则 → tmp-doc/<YYYY-MM-DD>/scrape-<slug>-<HH-MM-SS>-<rand>.md，同名已存在则追加序号，绝不裸覆盖。
+    extra 追加额外 frontmatter 字段（如规则接管时的 `rule: <rule-id>`）。
     """
     fetched_at = datetime.now(timezone.utc).isoformat()
+    extra_lines = "".join(f"{k}: {v}\n" for k, v in (extra or {}).items())
     frontmatter = (
         "---\n"
         f"url: {url}\n"
         f"fetched_at: {fetched_at}\n"
         f"fetch_method: {method}\n"
+        f"{extra_lines}"
         "---\n\n"
     )
     body = frontmatter + md + "\n"

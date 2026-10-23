@@ -77,7 +77,7 @@ tier genuinely cannot return the content.
 |------|------|----------|----------|
 | 1. API | `exa`, `tavily` | Structured search APIs; clean JSON, no rendering. `tavily extract` returns ready markdown, `tavily map`/`crawl` cover a whole site; `exa` adds `similar`, `contents`, `answer`, and async `research`. Fast and cheap. | Simple or public pages; search with snippets; fast fetch of a known URL; site map or crawl. |
 | 2. Firecrawl | `firecrawl` | Residential or home-bandwidth infrastructure; `scrape`/`search`/`interact`/`parse` are **keyless**, the other endpoints (`map`, `crawl`, `extract`, `agent`, `monitor`) need a key. More likely than Tier 1 to succeed on lightly protected pages, and the only tier with site-wide crawl and structured extraction. | A page refuses raw HTTP but shows no hard Cloudflare challenge. Batch scrape many URLs, crawl a whole site, or extract structured data with a schema. |
-| 3. Browser | `fetch`, `browser` | Drives the user's real Edge/Chromium, same engine as the daily browser so login cookies stay valid. `fetch` auto-escalates: normal API, then a headless browser with Cloudflare auto-detect (no challenge means solve returns instantly). `browser` is the direct browser platform when you already know you want the browser: `browser fetch` (headless + CF auto-detect, skips the API) and `browser search` (headless search engine: Bing CN/intl, Google). | Everything above failed; or the page is behind Cloudflare, needs JS, or needs login cookies; or you want a browser search engine directly. |
+| 3. Browser | `fetch`, `browser` | Drives the user's real Edge/Chromium, same engine as the daily browser so login cookies stay valid. `fetch` auto-escalates: normal API, then a headless browser with Cloudflare auto-detect (no challenge means solve returns instantly). `browser` is the direct browser platform when you already know you want the browser: `browser fetch` (headless + CF auto-detect, skips the API) and `browser search` (headless search engine: Bing international, Google). | Everything above failed; or the page is behind Cloudflare, needs JS, or needs login cookies; or you want a browser search engine directly. |
 
 Notes:
 - Escalation is **automatic inside `fetch`**: normal API, then a headless browser with CF
@@ -85,10 +85,12 @@ Notes:
   and let it climb.
 - `browser` is the direct browser platform, used when you already know the page needs a
   browser: `browser fetch` skips the API and goes straight to the headless browser with CF
-  auto-detect; `browser search` runs a headless search engine (default Bing international,
-  since CN Bing filters some sensitive terms).
-- `fetch` and `browser fetch` inject login cookies through the bundled MV3 extension bridge,
-  so logged-in pages work without re-entering credentials.
+  auto-detect; `browser search` runs a headless search engine (default Bing international).
+  It always requests `www.bing.com`; if the network redirects to `cn.bing.com`, it retries with
+  `ensearch=1` so you get international results even without a proxy.
+- `fetch` and `browser fetch` inject login cookies **and Web Storage** (localStorage /
+  sessionStorage) through the bundled MV3 extension bridge, so logged-in pages work without
+  re-entering credentials, including sites that keep the session token outside cookies.
 - The Cloudflare bypass runs on DrissionPage against the user's real browser. If that runtime
   dependency is missing, `fetch` and `browser fetch` report a clear install hint (exit code 5,
   antibot) instead of silently failing.
@@ -138,6 +140,52 @@ talks to the API and never renders the HTML.
 - **Zero config works** (anonymous). A token is optional but recommended: 60 vs 5000 requests/hour.
 - **Private repos need a token**; public file content is read through `raw.githubusercontent.com`
   and costs no API quota at all.
+
+### F. Site rules: user-maintained URL rules, adapters, and preprocessors
+
+Site rules are **user data, not package data**. The package ships no rules. Put TOML files in
+`~/.research-assistant/rules/`; a rule describes the URL layer and names the code capability that
+reads the response.
+
+- **URL layer** — `hosts` / `host_patterns`, `path_patterns` (named groups), `request` template,
+  `transport` (`browser` for CF/login, `http` for public endpoints, `html` for preprocess-only),
+  `login`, `headers`, `allow_cross_host`.
+- **Response adapters** — named code capabilities the rule references: `discourse_topic` (Discourse
+  JSON → per-post markdown), `json_path` (simple JSON field mapping), `css_extract` (CSS selectors),
+  `html_article` (default trafilatura extraction). These are **adapters, not rules**.
+- **HTML preprocessors** — named code capabilities the rule opts into: `strip_hidden_nodes`
+  (deletes invisible decoy text: `hidden`, `aria-hidden`, off-screen positioning, `font-size:0`,
+  ...), `remove_selectors` (drop nodes by CSS selector). There is no global hidden-node deletion;
+  only rules that list the preprocessor get it.
+
+Example rule (linux.do Discourse topics):
+
+```toml
+schema = 1
+
+[[rule]]
+id = "discourse-linuxdo-topic"
+hosts = ["linux.do", "www.linux.do"]
+path_patterns = ['^/t/(?P<id>\d+)(?:/(?P<post>\d+))?(?:\.json)?/?$']
+transport = "browser"
+request = "https://{host}/t/topic/{id}.json"
+parser = "discourse_topic"
+preprocess = [{ name = "strip_hidden_nodes" }]
+```
+
+`fetch` reports `method: "rule"` and `rule: "<id>"`. If a rule does not match, fails, or the adapter
+cannot parse the response, `fetch` falls back to the normal API / browser HTML path automatically.
+
+Inspect and test rules offline:
+
+```sh
+research-assistant rules validate
+research-assistant rules list
+research-assistant rules explain "<url>"
+research-assistant rules test [--rule ID]
+```
+
+Rules are best-effort like the GitHub takeover; a broken rule never blocks a fetch.
 - **`#L10-L20` is honored** — a deep link returns just those lines, so you can jump straight to the
   relevant part of a long file instead of fetching all of it.
 
@@ -207,10 +255,18 @@ research-assistant fetch <url> [<url>...] [--concurrency N (1-16, default 4)] [-
 # GitHub REST API (exact file bytes / repo metadata + README) instead of rendering the HTML page,
 # and reports method: "github". Public file content goes through raw.githubusercontent.com, which
 # costs no API quota and needs no token; api_key is optional (see section E).
+# Site rules run just after that: known URL shapes (e.g. Discourse topics) are read from the site's
+# data endpoint in the logged-in browser and report method: "rule" + rule id (see section F).
 
 # browser platform: direct browser, no API attempt. fetch = headless + CF auto-detect; search = headless engine.
 research-assistant browser fetch <url>... [--no-login] [--concurrency N (1-16, default 4)] [--format markdown|html] [--timeout N (1-300, default 60)] [--write PATH]   # skip the API, straight to the headless browser (--write, not global --output)
-research-assistant browser search "<query>" [--engine bing-cn|bing-intl|google] [--limit N] [--max-pages N] [--timeout N (1-300, default 60)]   # headless search engine (default bing-intl)
+research-assistant browser search "<query>" [--engine bing-cn|bing-intl|google] [--limit N] [--max-pages N] [--timeout N (1-300, default 60)]   # headless search engine (default bing-intl; bing-cn is a legacy alias, both request www.bing.com and force international results)
+
+# Site rules are user-maintained TOML in ~/.research-assistant/rules/ (the package ships none).
+research-assistant rules validate
+research-assistant rules list
+research-assistant rules explain "<url>"
+research-assistant rules test [--rule ID]
 
 # Aggregate the search sources in one call (default: configured exa,tavily + browser; browser is
 # always in the default set and works with zero config). Keywords, not an LLM.

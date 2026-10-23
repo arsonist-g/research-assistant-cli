@@ -22,7 +22,8 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
   + 真实 UA 修复，不被 CF 识别），点击穿过 Turnstile。自动升级：先走便宜的 API，失败才上真实浏览器。
 - **一个浏览器，多个 tab** — 抓 N 个 URL 只开一个浏览器进程 + N 个 tab，不是 N 个浏览器。搜索
   按首页结果数智能推断、并发翻页；跨进程实例上限防止浏览器失控。
-- **登录 cookie 桥接** — 内置 MV3 扩展把日常浏览器的登录 cookie 注入 fetch，登录页无需重输凭据。
+- **登录态桥接** — 内置 MV3 扩展把日常浏览器的登录 cookie **与页面 Web Storage**
+  （localStorage / sessionStorage）一起注入 fetch，登录页无需重输凭据；会话 token 不放在 cookie 的站点也能用。
 - **官方文档直取** — `ctx7 docs` 经 Context7 返回最新的库 / SDK / CLI / 云文档，比搜开放网页更快
   更准。
 - **web-LLM `ask` + 长文档 `locate`** — `ask` 用自带网页搜索的 LLM 回答自然语言问题并附引用；
@@ -30,10 +31,59 @@ Cloudflare 后的页面、取官方文档、在长文件里定位段落。`resea
 - **GitHub 走 API 而非爬页面** — `fetch` 自动接管 GitHub 文件 / 仓库 URL（`method: "github"`），
   改读 REST API：文件原文精确，仓库返回元数据 + 干净的 README。免 key 可用（公开仓库取文件零配额），
   填 token 解锁 5000 次/小时与私有仓库。`github file` / `github repo` 也可单独调用。
+- **站点规则是你自己的数据，不是本项目代码** — 规则放 `~/.research-assistant/rules/*.toml`，
+  本项目包里不带任何规则。规则负责 URL 层：匹配哪个地址、把它换成什么地址（加 `.json`、加参数、
+  换 host），再引用一个响应适配器（`discourse_topic`、`json_path`、`css_extract`、`html_article`）
+  和可选的 HTML 预处理器（`strip_hidden_nodes`、`remove_selectors`）。网站改版只改规则文件，不用给
+  本项目提 commit。`rules validate/list/explain/test` 负责校验与回归；规则失败自动落回普通链路。
+- **国内网络也走必应国际版** — 浏览器搜索一律请求 `www.bing.com`；若被网络 302 到
+  `cn.bing.com`，自动追加 `ensearch=1`（必应的国际结果开关）重取，不接受污染严重的国内结果集。
+  `bing-cn` 仅保留为兼容别名。
 - **插件式 provider** — 加一个 provider = 一个模块 + 一条配置；注册表自动发现，出现在 `--help`。
   无需改路由或 CLI。
 - **可脚本化** — stdout 默认 markdown（人/AI 友好、省 token）；`--output json` 供脚本/jq 解析。语义退出码（`0` 成功 · `1` 内部
   · `2` 参数 · `3` 配置 · `4` 网络 · `5` 反爬）。可作为 skill 装进 Claude Code、Codex 等。
+
+## 站点规则
+
+规则是**用户维护的数据**，不属于本包。把 TOML 文件放进 `~/.research-assistant/rules/`；
+一条规则只描述 URL 层：
+
+```toml
+schema = 1
+
+[[rule]]
+id = "discourse-linuxdo-topic"
+hosts = ["linux.do", "www.linux.do"]
+path_patterns = [
+  '^/t/(?P<id>\d+)(?:/(?P<post>\d+))?(?:\.json)?/?$',
+  '^/t/[^/]+/(?P<id>\d+)(?:/(?P<post>\d+))?(?:\.json)?/?$',
+]
+transport = "browser"                  # browser | http | html（只做预处理）
+request = "https://{host}/t/topic/{id}.json"
+parser = "discourse_topic"             # 响应适配器
+preprocess = [{ name = "strip_hidden_nodes" }]
+```
+
+- **URL 层**：`hosts` / `host_patterns`、`path_patterns`（命名捕获组）、`request` 模板、
+  `transport`（`browser`/`http` 会改写并请求；`html` 只预处理原页面，忽略 `request`）、
+  `login`、`headers`、`allow_cross_host`。
+- **响应适配器**（代码提供、规则按名字引用）：`discourse_topic`（Discourse JSON）、
+  `json_path`（简单 JSON 字段映射）、`css_extract`（CSS 选择器）、`html_article`（默认 trafilatura）。
+- **HTML 预处理器**（代码提供、规则按名字引用）：`strip_hidden_nodes`（隐藏诱饵文本）、
+  `remove_selectors`（按 CSS 选择器删节点）。
+
+离线检查与回归：
+
+```sh
+research-assistant rules validate
+research-assistant rules list
+research-assistant rules explain "https://linux.do/t/topic/3066000/1"
+research-assistant rules test
+```
+
+`fetch` 命中后返回 `method: "rule"` + `rule: "<id>"`；未命中、规则失败或适配器解析不了时，
+自动落回普通 API / 浏览器链路。
 
 ## 安装
 
@@ -141,6 +191,12 @@ research-assistant github repo <url>           # 仓库元数据 + README（2 �
 
 # 长文档
 research-assistant locate <md_path> "<q>"      # 锚点式相关性扫描
+
+# 站点规则（用户维护的 TOML，放 ~/.research-assistant/rules/；包内不带任何规则）
+research-assistant rules validate              # schema / 正则 / 适配器 / 模板校验
+research-assistant rules list                  # 已加载规则、来源、priority
+research-assistant rules explain "<url>"       # 命中哪条规则、会请求什么地址
+research-assistant rules test [--rule ID]      # 离线 fixture 回归
 
 # 管理
 research-assistant setup                       # 配置 + 安装 skill/agent

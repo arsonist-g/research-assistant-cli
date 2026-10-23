@@ -10,6 +10,9 @@
 结果 URL：优先结果块的 <cite>（必应/谷歌在 cite 显示真实 URL）；cite 不可用（面包屑或缺失）时
 回退标题链接的 href（必应是 /ck/a 跳转包装，解其 u= base64 取真实 URL）。
 
+引擎地区：一律请求 www.bing.com；国内网络会被 302 到 cn.bing.com，届时自动追加
+`ensearch=1` 再取一次（必应的国际结果开关）。`bing-cn` 仅作为兼容别名保留，不再请求国内站。
+
 选择器集中放 SELECTORS（CSS，DrissionPage ele/eles），实测于 2026-07。
 """
 
@@ -22,7 +25,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlparse, urlunparse
 
 from ..config import Config
 from ..errors import ArgsError, ResearchAssistantError
@@ -45,11 +48,33 @@ DEFAULT_MAX_PAGES = 10  # 默认翻页上限，防失控；可由调用方（CLI
 _SEARCH_CONCURRENCY = 4  # 搜索翻页并发 tab 数（与 fetch 默认并发对齐）
 
 # 引擎搜索 URL 模板（{q}=URL 编码后的关键词）。翻页靠页数表链接，不硬编码 offset 参数。
+# bing-cn 保留为**兼容别名**：国内版 cn.bing.com 的结果污染严重，一律改走 www.bing.com；
+# 若国内网络把 www 302 到 cn.bing.com，fetch_in_tab 会追加 ensearch=1 取国际结果（实测有效）。
 ENGINE_URLS: dict[str, str] = {
-    "bing-cn": "https://cn.bing.com/search?q={q}",
+    "bing-cn": "https://www.bing.com/search?q={q}",
     "bing-intl": "https://www.bing.com/search?q={q}",
     "google": "https://www.google.com/search?q={q}",
 }
+
+# 必应按 IP 重定向的国内站；命中后加 ensearch=1（必应自己的「国际版结果」开关）
+_CN_BING_HOSTS = frozenset({"cn.bing.com", "www.cn.bing.com"})
+
+
+def _is_cn_bing(url: str) -> bool:
+    try:
+        return (urlparse(url).hostname or "").lower() in _CN_BING_HOSTS
+    except ValueError:
+        return False
+
+
+def _with_ensearch(url: str) -> str:
+    """给 URL 加 ensearch=1（已有则保持原值），保留其余 query / fragment。"""
+    p = urlparse(url)
+    pairs = parse_qsl(p.query, keep_blank_values=True)
+    if not any(k == "ensearch" for k, _ in pairs):
+        pairs.append(("ensearch", "1"))
+    return urlunparse(p._replace(query=urlencode(pairs)))
+
 
 # 选择器（CSS，DrissionPage ele/eles），实测于 2026-07。
 # - item: 结果块；link: 标题链接（取 title）；snippet: 摘要；cite: 真实 URL（优先于 link href）。
@@ -228,6 +253,14 @@ def _run_engine_sync(config: Config, query: str, engine: str, limit: int, max_pa
         logger.info("GET %s", url)
         tab.get(url)
         _wait_network_idle(tab)
+        # 国内网络访问 www.bing.com 会被 302 到 cn.bing.com（数据污染重）。必应自己的
+        # ensearch=1 是「国际版结果」开关，实测在 cn.bing.com 上能拿到与 www 一致的结果。
+        if engine.startswith("bing") and _is_cn_bing(getattr(tab, "url", "") or ""):
+            intl_url = _with_ensearch(tab.url)
+            if intl_url != tab.url:  # 已经是 ensearch 页（翻页链接）就不重复导航
+                logger.warning("必应重定向到 cn.bing.com，改用国际结果: %s", intl_url)
+                tab.get(intl_url)
+                _wait_network_idle(tab)
         try:  # 偶发 CF/挑战兜底（无挑战 solve 秒过，开销极低）
             if cfbypass.is_cf_challenge(tab):
                 logger.info("结果页遇 CF 挑战，调用 cfbypass.solve")
@@ -317,7 +350,8 @@ async def search_engine(
     """浏览器搜索引擎：返回 {query, engine, results[]{url, title, snippet}}。
 
     无头 DrissionPage：首页 → 从页数表抽所有页码链接 → 按页码升序逐个访问，累计 ≥ limit 去重，
-    最多 max_pages 页（默认 10）。engine 默认 bing-intl（国内必应对部分敏感词会拒搜，国际版更稳）。
+    最多 max_pages 页（默认 10）。engine 默认 bing-intl：一律请求 www.bing.com，若被国内网络
+    302 到 cn.bing.com 则自动追加 ensearch=1 取国际结果（bing-cn 仅兼容别名）。
     timeout 限整体查询时长（秒），超时退出翻页、返回已收集的部分结果。
     """
     results = await asyncio.to_thread(_run_engine_sync, config, query, engine, limit, max_pages, timeout)

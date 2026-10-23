@@ -19,6 +19,7 @@ CDP 连不上时整棵浏览器进程树无人认领；改为本进程分配端�
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import re
@@ -36,7 +37,8 @@ from typing import Any
 from .. import config as config_mod
 from ..config import Config
 from ..errors import AntibotError, ConfigError, ResearchAssistantError
-from ..proxy import resolve_proxy
+from ..proxy import ensure_local_no_proxy, forced_direct, resolve_proxy
+from ..site_rules import RuleMatch, match_site_rule
 from .html2md import html_to_md
 from . import cfbypass
 
@@ -450,17 +452,78 @@ def _release_browser_slot(lock_dir: Path | None) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _get_login_cookies(config: Config) -> list[dict[str, Any]]:
-    if config.browser.extension_status != "installed":
-        return []
-    try:
-        from ..loginstate import get_cookies, to_playwright_cookies
+# Web Storage 种入脚本的大小上限（与扩展侧 4 MB 总预算对齐）
+_STORAGE_SEED_MAX_BYTES = 4 * 1024 * 1024
 
-        raw = await get_cookies(config)
-        return to_playwright_cookies(raw)
+
+def build_storage_seed_js(storage: dict[str, Any] | None) -> str | None:
+    """把扩展采集的 Web Storage 编译成 `Page.addScriptToEvaluateOnNewDocument` 脚本。
+
+    形状：`{"origins": {"https://host": {"l": {...}, "s": {...}}}, "truncated": bool}`
+    - 只写**主框架**（iframe 的 Storage 是另一套分区），只写 `location.origin` 命中的记录；
+    - 只补**尚不存在**的 key：站点自己在会话中写入的值不会被旧值覆盖。
+    返回 None 表示没有可种的数据。
+    """
+    origins = (storage or {}).get("origins") or {}
+    if not isinstance(origins, dict) or not origins:
+        return None
+    # 超限时按条目从后往前丢，保证注入脚本不会大到拖垮 CDP
+    items = list(origins.items())
+    while items:
+        payload = json.dumps(dict(items), ensure_ascii=False, separators=(",", ":"))
+        if len(payload.encode("utf-8")) <= _STORAGE_SEED_MAX_BYTES:
+            break
+        items.pop()
+    if not items:
+        return None
+    payload = json.dumps(dict(items), ensure_ascii=False, separators=(",", ":"))
+    # JSON 是合法 JS 对象字面量；U+2028/U+2029 会破坏旧 JS 解析，先转义
+    payload = payload.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return f"""(() => {{
+  try {{
+    if (window.top !== window) return;  // 只种主框架
+    const DB = {payload};
+    const rec = DB[location.origin];
+    if (!rec) return;
+    const fill = (store, obj) => {{
+      if (!obj) return;
+      for (const k in obj) {{
+        try {{ if (store.getItem(k) === null) store.setItem(k, obj[k]); }} catch (e) {{}}
+      }}
+    }};
+    try {{ fill(window.localStorage, rec.l); }} catch (e) {{}}
+    try {{ fill(window.sessionStorage, rec.s); }} catch (e) {{}}
+  }} catch (e) {{}}
+}})();"""
+
+
+def _install_storage_seed(tab: Any, seed_js: str | None) -> None:
+    """在 tab 首次导航前安装 Web Storage 种子（导航后再写，站点早已判定未登录）。"""
+    if not seed_js:
+        return
+    try:
+        tab.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=seed_js)
+    except Exception as e:
+        logger.warning("Web Storage 种入失败（仅影响 localStorage 登录的站点）: %s", e)
+
+
+async def _get_login_state(config: Config) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """取登录 cookie + Web Storage；扩展不可用/出错时返回空（按公开页处理，不阻塞 fetch）。"""
+    if config.browser.extension_status != "installed":
+        return [], {}
+    try:
+        from ..loginstate import get_login_state, to_playwright_cookies
+
+        raw, storage = await get_login_state(config)
+        return to_playwright_cookies(raw), storage
     except Exception:
-        # 登录态不可用不阻塞 fetch（按公开页处理）
-        return []
+        return [], {}
+
+
+async def _get_login_cookies(config: Config) -> list[dict[str, Any]]:
+    """兼容包装：只要 cookie。"""
+    cookies, _ = await _get_login_state(config)
+    return cookies
 
 
 def _file_version(exe: str) -> str | None:
@@ -558,6 +621,7 @@ def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     """
     from DrissionPage import ChromiumOptions
 
+    ensure_local_no_proxy()  # CDP 的 ws 连 127.0.0.1，不能被残留代理变量接管
     exe, _ = _resolve_executable(config)
     co = ChromiumOptions()
     co.set_browser_path(exe)
@@ -589,6 +653,9 @@ def _build_dp_options(config: Config, profile_dir: Path) -> Any:
     proxy_url = resolve_proxy(config.proxy.url)
     if proxy_url:
         co.set_argument(f"--proxy-server={proxy_url}")
+    elif forced_direct():
+        # --proxy none：Chromium 不传 --proxy-server 时仍会读系统代理，必须显式禁用
+        co.set_argument("--no-proxy-server")
     return co
 
 
@@ -759,13 +826,65 @@ def _wait_network_idle(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_one_tab(tab: Any, url: str, fmt: str = "markdown") -> str | None:
+def _try_rule_in_tab(tab: Any, hit: RuleMatch, rule: Any) -> str | None:
+    """在已注 cookie 的浏览器里按规则取数（当前只有 transport="browser"）。
+
+    直接打开规则给出的请求 URL（如 Discourse `.json`）：浏览器带登录态 + CF 放行，
+    JSON 会被 Chromium 当纯文本渲染，`document.body.innerText` 即原始响应体。
+    取不到 / 解析不出返回 None，由调用方落回 HTML 解析（规则接管是 best-effort）。
+    """
+    if getattr(rule, "transport", "") != "browser":
+        return None
+    try:
+        logger.info("规则 %s 接管 %s → %s", hit.rule_id, hit.source_url, hit.request_url)
+        tab.get(hit.request_url)
+        time.sleep(2.5)  # 等 CF widget / 响应渲染
+        if cfbypass.is_cf_challenge(tab) and not cfbypass.solve(tab):
+            logger.warning("规则 %s 请求被反爬拦截，落回 HTML: %s", hit.rule_id, hit.request_url)
+            return None
+        _wait_network_idle(tab)
+        if rule.parser:
+            body = (tab.run_js("return document.body.innerText") or "").strip()
+            if not body:
+                body = (tab.html or "").strip()
+            md = rule.parse(body, hit)
+        else:
+            # 浏览器 transport + 无解析器 = 把 URL 换成一个 HTML 地址后按默认抽取
+            html = tab.html or ""
+            md = html_to_md(rule.preprocess_html(html, hit), hit.source_url) or None
+        if md:
+            logger.info("规则 %s 命中: %s（%d 字符）", hit.rule_id, hit.source_url, len(md))
+        return md
+    except Exception as e:
+        logger.warning("规则 %s 取数失败 %s: %s", hit.rule_id, hit.source_url, e)
+        return None
+
+
+def _fetch_one_tab(
+    tab: Any, url: str, fmt: str = "markdown", rule_hits: dict[str, str] | None = None,
+    seed_js: str | None = None,
+) -> str | None:
     """单 tab 抓取：导航 → CF solve → 网络静默 → (html 直出 | html2md)。不建 browser/profile（由调用方建）。
 
     tab 是 ChromiumPage/ChromiumTab/MixTab（同套 API，cfbypass.solve 兼容）。
-    fmt=html 时返回原始 html（绕过 trafilatura）；否则走 html2md 抽正文。
+    seed_js 是登录 Web Storage 的种入脚本，必须在首次导航前装到该 tab。
+    fmt=html 时返回原始 html（绕过 trafilatura 与站点规则）；否则先看站点规则命中
+    （如 Discourse `.json`），未命中或规则取不到才走 html2md 抽正文。规则命中记入 rule_hits。
+    站点规则还可以提供 preprocess_html（如删隐藏节点），只对该 URL 生效。
     失败（CF 未过/内容过短）抛异常，由调用方捕获记 None。
     """
+    _install_storage_seed(tab, seed_js)
+
+    hit = match_site_rule(url) if fmt != "html" else None
+    rule = hit.rule if hit is not None else None
+    if hit is not None and rule is not None:
+        md = _try_rule_in_tab(tab, hit, rule)
+        if md:
+            if rule_hits is not None:
+                rule_hits[url] = hit.rule_id
+            return md
+        logger.info("站点规则未取到内容，落回 HTML 解析: %s", url)
+
     logger.info("GET %s", url)
     tab.get(url)
     time.sleep(2.5)  # 等 CF widget 渲染
@@ -778,12 +897,23 @@ def _fetch_one_tab(tab: Any, url: str, fmt: str = "markdown") -> str | None:
     if len(html) < 200:
         raise AntibotError(f"CF 绕过后内容仍过短: {url}")
     if fmt == "html":
-        return html  # 原始 html，绕过 trafilatura
+        return html  # 原始 html，绕过 trafilatura 与站点规则
+    if hit is not None and rule is not None:
+        # transport="html" 的规则也可以指定适配器（如 css_extract）处理原页面 HTML
+        if rule.parser:
+            md = rule.parse(html, hit)
+            if md:
+                return md
+        # 站点专属预处理只在命中规则时套用；普通站点保持 html_to_md 的默认行为
+        return html_to_md(html, url, preprocess=lambda h: rule.preprocess_html(h, hit))
     return html_to_md(html, url)
 
 
-def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown") -> str | None:
-    """单 url 同步：建 1 browser + tab0，hide + 注 cookie，_fetch_one_tab(tab0)，关 browser。"""
+def _fetch_single_sync(
+    config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown",
+    storage: dict[str, Any] | None = None,
+) -> str | None:
+    """单 url 同步：建 1 browser + tab0，hide + 注 cookie / Web Storage，_fetch_one_tab(tab0)，关 browser。"""
     profile_dir = _new_profile_dir()
     lock_dir = _acquire_browser_slot(config)
     page = None
@@ -792,7 +922,8 @@ def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], 
         _write_suppress_prefs(profile_dir)
         page, browser_pid = _launch_page(config, profile_dir)
         _inject_cookies_dp(page, cookies)
-        return _fetch_one_tab(page, url, fmt)  # page(ChromiumPage)即 tab0，可直接喂 _fetch_one_tab
+        seed_js = build_storage_seed_js(storage)
+        return _fetch_one_tab(page, url, fmt, seed_js=seed_js)  # page(ChromiumPage)即 tab0
     finally:
         _close_browser(page, browser_pid)
         _safe_rmtree(profile_dir)
@@ -800,7 +931,8 @@ def _fetch_single_sync(config: Config, url: str, cookies: list[dict[str, Any]], 
 
 
 async def _fetch_with_stealth(
-    config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown"
+    config: Config, url: str, cookies: list[dict[str, Any]], fmt: str = "markdown",
+    storage: dict[str, Any] | None = None,
 ) -> str | None:
     """单 url 薄包装（建 browser+tab0 调 _fetch_one_tab）。供 test_cf_live 与单 url 用。"""
     exe, src = _resolve_executable(config)
@@ -808,12 +940,14 @@ async def _fetch_with_stealth(
         raise ResearchAssistantError(
             f"未找到本地浏览器 ({src})，浏览器抓取不可用"
         )
-    return await asyncio.to_thread(_fetch_single_sync, config, url, cookies, fmt)
+    return await asyncio.to_thread(_fetch_single_sync, config, url, cookies, fmt, storage)
 
 
 def _fetch_all_tabs_sync(
     config: Config, urls: list[str], cookies: list[dict[str, Any]], concurrency: int,
     fmt: str = "markdown", timeout: float = 60.0,
+    rule_hits: dict[str, str] | None = None,
+    storage: dict[str, Any] | None = None,
 ) -> dict[str, str | None]:
     """多 url 1 浏览器多 tab：建 browser + tab0，hide + 注 cookie（共享存储），主线程 new_tab 建 N tab，
     ThreadPoolExecutor 并发各 tab _fetch_one_tab。单 tab 超过 timeout 秒记 None 不等待。
@@ -834,6 +968,7 @@ def _fetch_all_tabs_sync(
         _write_suppress_prefs(profile_dir)
         page, browser_pid = _launch_page(config, profile_dir)
         _inject_cookies_dp(page, cookies)  # 注一次，所有 tab 共享
+        seed_js = build_storage_seed_js(storage)  # 每个 tab 首次导航前各自安装
 
         # 主线程：预建 tab。tab0(page) 给第 1 个 url；其余 new_tab(background) 空 tab。
         tabs: list[Any] = []
@@ -849,7 +984,7 @@ def _fetch_all_tabs_sync(
             i, url = idx_url
             tab = tabs[i]
             try:
-                md = _fetch_one_tab(tab, url, fmt)
+                md = _fetch_one_tab(tab, url, fmt, rule_hits, seed_js)
                 return url, md
             except Exception as e:
                 logger.warning("tab 抓取失败 %s: %s", url, e)
@@ -892,19 +1027,25 @@ async def fetch_with_browser(
     concurrency: int = 4,
     fmt: str = "markdown",
     timeout: float = 60.0,
+    rule_hits: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     """批量用 headless 浏览器抓取（1 browser 多 tab，fetch 浏览器层与 browser fetch 共用）。
 
     返回 {url: content_or_None}。fmt=html 时每页返回原始 html，否则 markdown（trafilatura 抽正文）。
+    站点规则命中时内容来自规则指定的取数形式（如 Discourse JSON），命中的 url→rule_id 写入
+    调用方传入的 `rule_hits`（fetch 据此把 method 记为 "rule"，保持接管可观测）。
     单 tab 超过 timeout 秒记 None 不阻塞整批；finally 杀 browser PID 让残余 worker 解阻塞退出。
     失败（CF 未过/无浏览器/内容过短/进程数达上限）记 None 或抛 ConfigError（进程上限）。
     """
     cleanup_orphans()
 
     cookies: list[dict[str, Any]] = []
+    storage: dict[str, Any] = {}
     if login:
-        cookies = await _get_login_cookies(config)
+        cookies, storage = await _get_login_state(config)
+    if not isinstance(storage, dict):
+        storage = {}
 
     return await asyncio.to_thread(
-        _fetch_all_tabs_sync, config, urls, cookies, concurrency, fmt, timeout
+        _fetch_all_tabs_sync, config, urls, cookies, concurrency, fmt, timeout, rule_hits, storage
     )

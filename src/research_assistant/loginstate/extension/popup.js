@@ -28,8 +28,9 @@ async function refresh() {
     const r = await fetch("http://127.0.0.1:" + port + "/status", { cache: "no-store" });
     const s = await r.json();
     document.getElementById("cacheV").textContent = s.cachedCookieCount ?? "—";
+    document.getElementById("storageV").textContent = s.cachedStorageOrigins ?? "—";
     if (s.extConnected) {
-      setLight("ok", "已连接 daemon · cookie 通道就绪");
+      setLight("ok", "已连接 daemon · 登录态通道就绪（cookie + Web Storage）");
       return;
     }
     setLight("warn", "daemon 在线，等待连接", "扩展自动重连中；若长时间等待，点「立即重连」。");

@@ -490,7 +490,7 @@ def test_fetch_single_sync_launches_via_launch_page(monkeypatch, home):
     monkeypatch.setattr(b, "_acquire_browser_slot", lambda cfg: home / "l")
     monkeypatch.setattr(b, "_release_browser_slot", lambda d: None)
     monkeypatch.setattr(b, "_safe_rmtree", lambda d: None)
-    monkeypatch.setattr(b, "_fetch_one_tab", lambda tab, url, fmt: "md")
+    monkeypatch.setattr(b, "_fetch_one_tab", lambda tab, url, fmt, *a, **k: "md")
     launched: list = []
     _patch_launch_scaffold(monkeypatch, b, launched)
 
@@ -506,7 +506,7 @@ def test_fetch_all_tabs_sync_launches_via_launch_page(monkeypatch, home):
     monkeypatch.setattr(b, "_acquire_browser_slot", lambda cfg: home / "l")
     monkeypatch.setattr(b, "_release_browser_slot", lambda d: None)
     monkeypatch.setattr(b, "_safe_rmtree", lambda d: None)
-    monkeypatch.setattr(b, "_fetch_one_tab", lambda tab, url, fmt: "md")
+    monkeypatch.setattr(b, "_fetch_one_tab", lambda tab, url, fmt, *a, **k: "md")
     launched: list = []
     _patch_launch_scaffold(monkeypatch, b, launched)
 

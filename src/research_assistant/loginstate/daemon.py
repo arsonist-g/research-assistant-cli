@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 from typing import Any
 
@@ -28,7 +29,10 @@ class CookieDaemon:
         self._ext_ws: web.WebSocketResponse | None = None
         self._last_cookies: list[dict[str, Any]] | None = None
         self._last_cookie_at: float = 0.0
+        self._last_storage: dict[str, Any] = {}
+        self._storage_proto = 0  # 扩展 hello 声明的能力（2 = 支持 Web Storage 分开发送）
         self._pending: asyncio.Future | None = None
+        self._pending_storage: asyncio.Future | None = None
         self._lock = asyncio.Lock()
 
     # ---- WebSocket（扩展连这里）----
@@ -55,11 +59,20 @@ class CookieDaemon:
         if t == "cookies":
             self._last_cookies = m.get("data") or []
             self._last_cookie_at = asyncio.get_event_loop().time()
+            by_proto = int(m.get("storageProto") or 0)
+            if by_proto > self._storage_proto:
+                self._storage_proto = by_proto
             if self._pending and not self._pending.done():
                 self._pending.set_result(self._last_cookies)
                 self._pending = None
+        elif t == "storage":
+            self._last_storage = m.get("data") or {}
+            if self._pending_storage and not self._pending_storage.done():
+                self._pending_storage.set_result(self._last_storage)
+                self._pending_storage = None
         elif t == "hello":
-            log.info("收到扩展 hello")
+            self._storage_proto = int(m.get("storageProto") or 0)
+            log.info("收到扩展 hello（storageProto=%s）", self._storage_proto)
         elif t == "pong":
             pass
         elif t == "error":
@@ -83,36 +96,70 @@ class CookieDaemon:
             {
                 "extConnected": self._ext_ws is not None and not self._ext_ws.closed,
                 "cachedCookieCount": len(self._last_cookies) if self._last_cookies else 0,
+                "cachedStorageOrigins": len((self._last_storage or {}).get("origins") or {}),
+                "storageProto": self._storage_proto,
                 "lastCookieAt": self._last_cookie_at or None,
             }
         )
 
     async def cookies_handler(self, request: web.Request) -> web.Response:
         try:
-            cookies = await self._fetch_cookies(timeout=10.0)
-            return web.json_response({"count": len(cookies), "data": cookies})
+            cookies, storage = await self._fetch_login_state(timeout=10.0)
+            return web.json_response({"count": len(cookies), "data": cookies, "storage": storage})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=503)
 
     async def _fetch_cookies(self, timeout: float = 10.0) -> list[dict[str, Any]]:
+        """只要 cookie 的兼容入口（测试与旧调用方）。"""
+        cookies, _ = await self._fetch_login_state(timeout=timeout, want_storage=False)
+        return cookies
+
+    async def _fetch_login_state(
+        self, timeout: float = 10.0, storage_timeout: float = 3.5, want_storage: bool = True,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """取 cookie + Web Storage。
+
+        两半分开发：cookie 到达即返回给调用方逻辑，storage 在独立预算内再等（扩展先回 cookie
+        再采集 storage，卡住的 tab 不会拖垮 cookie）。扩展不支持 storage（storageProto < 2）时
+        不请求、不等待，保持旧扩展兼容。
+        """
         if self._ext_ws is None or self._ext_ws.closed:
             raise RuntimeError("扩展未连接（请确认日常浏览器已加载 research-assistant 扩展且 daemon 在线）")
         async with self._lock:
             if self._pending is not None:
-                raise RuntimeError("已有进行中的 cookie 请求")
+                raise RuntimeError("已有进行中的登录态请求")
             loop = asyncio.get_event_loop()
             self._pending = loop.create_future()
+            storage_fut: asyncio.Future | None = None
+            if want_storage and self._storage_proto >= 2:
+                storage_fut = loop.create_future()
+                self._pending_storage = storage_fut
+            req: dict[str, Any] = {"type": "getCookies", "reqId": secrets.token_hex(4)}
+            if storage_fut is not None:
+                req["wantStorage"] = True
             try:
-                await self._ext_ws.send_str(json.dumps({"type": "getCookies"}))
-                return await asyncio.wait_for(self._pending, timeout=timeout)
-            except asyncio.TimeoutError:
-                if not self._pending.done():
-                    self._pending.set_exception(RuntimeError("扩展响应超时"))
-                raise
+                await self._ext_ws.send_str(json.dumps(req))
+                try:
+                    cookies = await asyncio.wait_for(self._pending, timeout=timeout)
+                except asyncio.TimeoutError:
+                    if not self._pending.done():
+                        self._pending.set_exception(RuntimeError("扩展响应超时"))
+                    raise
+                storage: dict[str, Any] = {}
+                if storage_fut is not None:
+                    try:
+                        storage = await asyncio.wait_for(storage_fut, timeout=storage_timeout)
+                    except asyncio.TimeoutError:
+                        # storage 超时只降低登录态完整度，cookie 已拿到，不判失败
+                        storage = {"origins": {}, "error": "storage_timeout"}
+                return cookies, storage
             finally:
                 # 所有退出路径(成功/超时/send 失败)都清占位,否则泄漏会让后续
-                # /cookies 永久报「已有进行中的 cookie 请求」直到 daemon 重启
+                # /cookies 永久报「已有进行中的请求」直到 daemon 重启
                 self._pending = None
+                if self._pending_storage is not None and not self._pending_storage.done():
+                    self._pending_storage.cancel()
+                self._pending_storage = None
 
     def build_app(self) -> web.Application:
         app = web.Application()

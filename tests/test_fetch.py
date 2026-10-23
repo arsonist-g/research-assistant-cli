@@ -98,6 +98,38 @@ def test_fetch_one_tab_html_vs_markdown(monkeypatch):
     assert "content" in md
 
 
+def test_fetch_one_tab_uses_rule_parser_for_html_fallback(monkeypatch):
+    """transport="html" 的规则可以指定适配器（如 css_extract）解析原页面 HTML。"""
+    from research_assistant.fetch import browser as b
+    from research_assistant.site_rules import RuleMatch
+
+    monkeypatch.setattr(b.cfbypass, "solve", lambda tab: True)
+    monkeypatch.setattr(b, "_wait_network_idle", lambda tab, **k: None)
+    monkeypatch.setattr(b.time, "sleep", lambda *a, **k: None)
+
+    class _Rule:
+        parser = "css_extract"
+
+        def parse(self, html, hit):
+            return "PARSED BY ADAPTER"
+
+        def preprocess_html(self, html, hit):
+            return html
+
+    hit = RuleMatch(rule=_Rule(), source_url="http://x", request_url="http://x", meta={})
+    monkeypatch.setattr(b, "match_site_rule", lambda url: hit)
+
+    class _Tab:
+        def get(self, url):
+            pass
+
+        @property
+        def html(self):
+            return "<html><body><p>" + "raw content " * 40 + "</p></body></html>"
+
+    assert b._fetch_one_tab(_Tab(), "http://x", "markdown") == "PARSED BY ADAPTER"
+
+
 # ---------------------------------------------------------------------------
 # fetch 聚合命令 run：单 URL 超时 + 并发限流（normal 层）
 # ---------------------------------------------------------------------------
@@ -196,7 +228,7 @@ async def test_fetch_all_tabs_per_future_timeout(monkeypatch, home):
 
     monkeypatch.setattr("DrissionPage.ChromiumPage", lambda opts: _FakePage(), raising=False)
 
-    def slow_fetch(tab, url, fmt):
+    def slow_fetch(tab, url, fmt, *a):
         time.sleep(0.5)  # 超过 timeout=0.2
         return "slow"
 

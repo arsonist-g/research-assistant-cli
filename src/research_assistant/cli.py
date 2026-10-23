@@ -96,9 +96,11 @@ def _build_parser(config: Any) -> argparse.ArgumentParser:
     from .commands import doctor as doctor_cmd
     from .commands import config as config_cmd
     from .commands import permissions as permissions_cmd
+    from .commands import rules as rules_cmd
 
     for cmd in (
-        fetch_cmd, locate_cmd, search_cmd, ask_cmd, config_cmd, setup_cmd, skills_cmd, permissions_cmd, doctor_cmd
+        fetch_cmd, locate_cmd, search_cmd, ask_cmd, config_cmd, setup_cmd, skills_cmd,
+        permissions_cmd, doctor_cmd, rules_cmd,
     ):
         cmd.register(subs)
 
@@ -131,6 +133,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # 代理横切覆盖（CLI --proxy 优先级最高，ADR-0007）
         proxy_mod.set_override(g_ns.proxy)
+        # 本机回环（CDP ws / daemon http）永不走代理：代理变量残留会让 websocket-client
+        # 把 127.0.0.1 连接发给代理，表现为「浏览器未开启或已关闭」
+        proxy_mod.ensure_local_no_proxy()
 
         # 加载配置（文件不存在=首次使用，返回空 Config）
         config = load_config(g_ns.config_path)
